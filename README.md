@@ -1,3 +1,3 @@
 # Computer Science
 
-All work are done in Python.
+All work here are done in Python.
