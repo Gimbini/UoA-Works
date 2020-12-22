@@ -1,0 +1,169 @@
+---
+title: "YRBS Analysis with XGBoost"
+author: "Bin Kim"
+date: "10/27/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(xgboost)
+load("yrbs.rda")
+```
+# Task 1
+
+## Data Preparation
+```{r}
+yrbs = x
+yrbs$r = r
+yrbs = yrbs %>%
+    filter(!is.na(r))
+```
+
+## Model Fitting
+
+```{r}
+table(yrbs$r)
+```
+
+There are only 163 observations for group 0 (American Indian/Native) and 100 for group 3 (Hawaiian/Pacific). Doing a train-test split risks ruining the model by including very few observations of these groups. Doing a standard 5-fold.
+
+```{r}
+yrbs_x = apply(as.matrix(yrbs[, -95]), 2, as.numeric)
+yrbs_r = apply(as.matrix(yrbs[, 95]), 2, as.numeric)
+```
+
+```{r}
+# Standard Settings
+set.seed(763)
+yrbs_xgb_cv = xgb.cv(data = yrbs_x, label = yrbs_r, nrounds = 300, objective = "multi:softmax", num_class = 8, nfold = 5, early_stopping_rounds = 15, eta = 0.2, lambda = 1, max_depth = 3)
+```
+
+## Fit The Best Model
+
+```{r}
+set.seed(763)
+yrbs_fit = xgboost(data = yrbs_x, label = yrbs_r, nrounds = 96, objective = "multi:softmax", num_class = 8, nfold = 5, eta = 0.2, lambda = 1, max_depth = 3)
+```
+
+```{r}
+# Confusion Matrix
+conf_mat = table(predict(yrbs_fit, newdata = yrbs_x), yrbs_r)
+conf_mat
+
+# Number of observations per group
+group_sum = apply(conf_mat, 2, sum)
+group_sum
+
+# get proportions of correctly classified per group. 
+correct_class = NULL
+for (i in 1:8) {
+    correct_class = c(correct_class, conf_mat[i,i])
+}
+
+correct_prop = correct_class / group_sum
+correct_prop
+```
+
+Accuracy is high for groups with many data points and vice versa.
+
+# Task 2
+```{r}
+yrtb_importance =xgb.importance(model=yrbs_fit)
+yrtb_importance
+xgb.plot.importance(yrtb_importance, top_n = 10, main = "Top Important Questions")
+
+```
+
+Question 97: "...how many times have you had a sunburn?..." was the most influential question in classifying the race of a student. We will also examine Question 9: "How often do you wear a seat belt when riding in a car driven by someone else?", Question 8: "When you rode a bicycle during the past 12 months, how often did you wear a helmet?", Question 89 "Average grades for the past 12 months", and Question 13 "How many days of the week are you carrying weapons?".
+
+# Task 3
+
+```{R}
+q97_table = table(yrbs_x[,"q97"], yrbs_r)
+for (col in 1:ncol(q97_table)) {
+    total = sum(q97_table[,col])
+    q97_table[,col] = q97_table[,col] / total
+}
+
+as.data.frame(q97_table) %>% mutate(Var1 = recode_factor(Var1, `1` = "0", `2` = "1", `3` = "2", `4` = "3", `5` = "4", `6` = "5 or more")) %>%
+    ggplot(aes(fill=factor(Var1, c("5 or more", 4:0)), x=yrbs_r, y=Freq)) + geom_bar(position = "fill", stat="identity") + 
+    labs(fill="Answer", title = "# Sunburn per Week: Answer Proportion by Race") + xlab("Group") + ylab("%") + 
+    scale_x_discrete(breaks=0:7, labels=c("Asian", "Black", "Nat-Ind", "Hwi/Pcf", "White", "Lat", "Multi/Lat", "Multi")) 
+```
+
+White students notably get more sunburns than other groups. 
+
+```{R}
+q9_table = table(yrbs_x[,"q9"], yrbs_r)
+for (col in 1:ncol(q9_table)) {
+    total = sum(q9_table[,col])
+    q9_table[,col] = q9_table[,col] / total
+}
+
+as.data.frame(q9_table) %>% mutate(Var1 = recode_factor(Var1, `1` = "Never", `2` = "Rarely", `3` = "Sometimes", `4` = "Mostly", `5` = "Always")) %>%
+    ggplot(aes(fill=factor(Var1, rev(c("Never", "Rarely", "Sometimes", "Mostly", "Always"))), x=yrbs_r, y=Freq)) + 
+    geom_bar(position = "fill", stat="identity") + 
+    labs(fill="Answer", title = "Seatbelt in Car: Answer Proportion by Race") + xlab("Group") + ylab("%") + 
+    scale_x_discrete(breaks=0:7, labels=c("Native", "Asian", "Black", "Hwi/Pcf", "White", "Latino", "Multi/Lat", "Multi")) 
+```
+
+Black students have the lowest proportion of students who answered "Always".
+
+```{R}
+q8_table = table(yrbs_x[,"q8"], yrbs_r)
+for (col in 1:ncol(q8_table)) {
+    total = sum(q8_table[,col])
+    q8_table[,col] = q8_table[,col] / total
+}
+
+as.data.frame(q8_table) %>% mutate(Var1 = recode_factor(Var1, `1` = "No Bicycle", `2` = "Never", `3` = "Rarely", `4` = "Sometimes", `5` = "Mostly", `6` = "Always")) %>%
+    ggplot(aes(fill=factor(Var1, c("No Bicycle", "Never", "Rarely", "Sometimes", "Mostly", "Always")), x=yrbs_r, y=Freq)) + 
+    geom_bar(position = "fill", stat="identity") + 
+    labs(fill="Answer", title = "Wear Helmet on Bicycle: Answer Proportion by Race") + xlab("Group") + ylab("%") + 
+    scale_x_discrete(breaks=0:7, labels=c("Native", "Asian", "Black", "Hwi/Pcf", "White", "Latino", "Multi/Lat", "Multi"))
+```
+
+Hard to distinguish particular differences for this question. Asian students seem to ride less bikes on average. Black and Latino students may be less inclined to wear helmets when riding bicycles.
+
+```{R}
+q89_table = table(yrbs_x[,"q89"], yrbs_r)
+for (col in 1:ncol(q89_table)) {
+    total = sum(q89_table[,col])
+    q89_table[,col] = q89_table[,col] / total
+}
+
+as.data.frame(q89_table) %>% mutate(Var1 = recode_factor(Var1, `1` = "A", `2` = "B", `3` = "C", `4` = "D", `5` = "F", `6` = "None of Below", `7` = "Not Sure")) %>%
+    ggplot(aes(fill=factor(Var1, c("Not Sure", "None of Below", "F", "D", "C", "B", "A")), x=yrbs_r, y=Freq)) + 
+    geom_bar(position = "fill", stat="identity") + 
+    labs(fill="Answer", title = "Average Grades: Answer Proportion by Race") + xlab("Group") + ylab("%") + 
+    scale_x_discrete(breaks=0:7, labels=c("Native", "Asian", "Black", "Hwi/Pcf", "White", "Latino", "Multi/Lat", "Multi"))
+```
+
+Asian students were reported to be peforming the best in high schools, followed by White students. Native students seem to perform relatively worse. Other 4 groups have similar proportions. 
+
+```{r}
+
+q13_table = table(yrbs_x[,"q13"], yrbs_r)
+for (col in 1:ncol(q13_table)) {
+    total = sum(q13_table[,col])
+    q13_table[,col] = q13_table[,col] / total
+}
+
+as.data.frame(q13_table) %>% mutate(Var1 = recode_factor(Var1, `1` = "0", `2` = "1", `3` = "2", `4` = "2-3", `5` = "4-5", `6` = "5 or more")) %>%
+    ggplot(aes(fill=factor(Var1), x=yrbs_r, y=Freq)) + geom_bar(position = "fill", stat="identity") + 
+    labs(fill="Answer", title = "Days of Carrying Weapon in a Week: Answer Proportion by Race") + xlab("Group") + ylab("%") + 
+    scale_x_discrete(breaks=0:7, labels=c("Native", "Asian", "Black", "Hwi/Pcf", "White", "Latino", "Multi/Lat", "Multi"))
+```
+
+Almost no Asian high school students were reported as carrying weapons throughout the week. Natives and the Hawaii/Pacific students seem to have the highest proportion of students carrying weapons. 
+
+# Task 4
+
+The YRBS is a data about people's health. The best predictor in the model (Q97) tells us that White students are probably more prone to skin health problems caused by sunburns. Insurance companies may leverage this observation and increase the premiums for the whole White group without properly examining individual differences, and that is discriminatory.
+
+According to the survey, on a relative scale, Black students wore the seatbelt in a car the most, and Native students scored the worst grades and carried weapons the most. There is danger of labelling them as 'socially dangerous' if that information were to be let out carelessly. About 80% of Native students get a pass in school (above grade C) and 70% of them don't carry weapons, and most Black students wear seatbelts in car, which means they are mostly fine. Hence, the information needs to be explained with care so as not to classify them as 'dangerous' as a whole. There is also a very good chance that these predictors can't be trusted because there are comparatively very few observations for Native Americans, and this probably had big impact in its low accuracy (as discussed in Task 1). 
+
+Another factor is that the survey does not take account of students who do not attend high school, or any adults. Any information extracted should be used very carefully if it were to be applied to the whole US adolescent population or general population. 
+
+
