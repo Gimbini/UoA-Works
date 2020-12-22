@@ -1,3 +1,3 @@
 # Statistics
 
-All work here are done in R which originated from UoA.
+My stats assignments and labs done at the UoA. All work are done in R.
