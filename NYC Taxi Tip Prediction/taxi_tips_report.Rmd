@@ -1,0 +1,908 @@
+---
+title: "STATS369 Assignment 2: Predicting NYC Taxi Tips"
+author: "Bin Kim"
+date: "8/28/2020"
+output: html_document
+---
+
+```{r load-packages, include=FALSE}
+library(dplyr)
+library(magrittr)
+library(knitr)
+library(tidyverse)
+library(leaps)
+library(glmnet)
+library(lubridate)
+options(tibble.width = Inf)
+options(tibble.print_max = 30)
+
+```
+
+``` {r}
+taxi_train = read_csv("week2.csv")
+taxi_test = read_csv("week4.csv")
+
+```
+
+``` {r, cache=TRUE}
+taxi_train %>% summary()
+```
+
+# Handling Negative Values
+
+`summary()` indicates there are negative values in monetary variables.
+
+```{r}
+
+taxi_train %>% 
+        filter(total_amount < 0) %>%
+        select(fare_amount, extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, total_amount) %>%
+        head(20)
+    
+```
+
+Negative total amounts are still the sum of their monetary variables. Looks like most of these values can be fixed by simply turning them back into absolute values.
+
+```{r}
+taxi_train <- taxi_train %>% mutate(
+    fare_amount = abs(fare_amount),
+    extra = abs(extra),
+    mta_tax = abs(mta_tax),
+    tip_amount = abs(tip_amount),
+    tolls_amount = abs(tolls_amount),
+    improvement_surcharge = abs(improvement_surcharge),
+    total_amount = abs(total_amount)
+)
+
+taxi_test <- taxi_test %>% mutate(
+    fare_amount = abs(fare_amount),
+    extra = abs(extra),
+    mta_tax = abs(mta_tax),
+    tip_amount = abs(tip_amount),
+    tolls_amount = abs(tolls_amount),
+    improvement_surcharge = abs(improvement_surcharge),
+    total_amount = abs(total_amount)
+)
+```
+
+# Variable Examination
+
+## Variable Transformation
+
+```{r, cache=TRUE}
+head(taxi_train$tpep_pickup_datetime)
+taxi_train %>%
+    ggplot(aes(x=factor(hour(tpep_pickup_datetime)))) + geom_bar() + labs(title = "Taxi Pickup Frequencies by Hour", x = "Hour", y = "Number of Trips")
+```
+
+The data indicates that the recorded times are in UTC format, but this doesn't seem to be true. Times seem to be already set in EST.
+
+Changing variable names to be meaningful, and creating useful variables...
+
+```{r}
+# train data, week 2
+taxi_train <- taxi_train %>%
+    mutate(dropoff_datetime = tpep_dropoff_datetime,
+           pickup_datetime = tpep_pickup_datetime,
+           dow = wday(pickup_datetime, label=TRUE, abbr=TRUE, week_start = 1),
+           dow = as.character(dow),
+           dow = factor(dow, ordered = FALSE, levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")),
+           hour_trip_start = factor(hour(pickup_datetime)),
+           trip_duration = as.numeric(difftime(dropoff_datetime, pickup_datetime, units = "mins")),
+           payment_type_label = fct_recode(factor(payment_type),
+                                           "Credit Card" = "1",
+                                           "Cash" = "2",
+                                           "No Charge" = "3",
+                                           "Other"= "4")) %>%
+    select(-c(payment_type, tpep_pickup_datetime, tpep_dropoff_datetime))
+
+# test data, week 4
+taxi_test <- taxi_test %>%
+    mutate(dropoff_datetime = tpep_dropoff_datetime,
+           pickup_datetime = tpep_pickup_datetime,
+           dow = wday(pickup_datetime, label=TRUE, abbr=TRUE, week_start = 1),
+           dow = as.character(dow),
+           dow = factor(dow, ordered = FALSE, levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")),
+           hour_trip_start = factor(hour(pickup_datetime)),
+           trip_duration = as.numeric(difftime(dropoff_datetime, pickup_datetime, units = "mins")),
+           payment_type_label = fct_recode(factor(payment_type),
+                                           "Credit Card" = "1",
+                                           "Cash" = "2",
+                                           "No Charge" = "3",
+                                           "Other"= "4")) %>%
+    select(-c(payment_type, tpep_pickup_datetime, tpep_dropoff_datetime))
+```
+
+## total_amount
+
+We're not going to be using this variable in our model because we know it contains direct information about the tip amount. We'll just use it as a error checker and select rows where their total amount equals the sum of all the monetary variables.
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(total_amount == fare_amount + extra + mta_tax + improvement_surcharge + tip_amount + tolls_amount)
+
+taxi_test <- taxi_test %>%
+    filter(total_amount == fare_amount + extra + mta_tax + improvement_surcharge + tip_amount + tolls_amount)
+```
+
+## payment_type
+
+```{r}
+unique(taxi_train$payment_type_label) 
+```
+
+Only 4 out of 6 payments types in the dataset: `Unknown`, and `Voided trip` are not present.
+
+Since it doesn't make sense to tip in a no charge trip, they will be excluded from our dataset. 
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(payment_type_label %in% c("Credit Card", "Cash", "Other"))
+taxi_test <- taxi_test %>%
+    filter(payment_type_label %in% c("Credit Card", "Cash", "Other"))
+```
+
+We already know that cash tips aren't included in the data. Is it still meaningful to keep trips paid with cash or 'other'?
+
+```{r}
+taxi_train %>% 
+    group_by(payment_type_label) %>%
+    summarise(zero_tips = sum(tip_amount == 0), nrow = n(), ratio = zero_tips/nrow)
+    
+```
+
+For cash and other trips, just short of 100% of them were given zero tips. It should be safe to remove them for our purpose.
+
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(payment_type_label == "Credit Card") %>%
+    select(-payment_type_label) # variable not needed anymore
+
+taxi_test <- taxi_test %>%
+    filter(payment_type_label == "Credit Card") %>%
+    select(-payment_type_label) # variable not needed anymore
+```
+
+
+## hour_trip_start
+
+```{r}
+taxi_train %>% group_by(hour_trip_start) %>%
+    summarise(tip_mean = mean(tip_amount)) %>%
+    ggplot(aes(x=hour_trip_start, y=tip_mean)) + geom_point() + geom_line(aes(group = 1), linetype="dotted") + labs(title = "Average Tip Amount by Hour", y = "Average $", x = "Hour of Trip Start")
+
+```
+
+Trips between 4 ~ 6 am have notably higher average tip amount than the rest. Creating a categorical varaible indicating whether a trip started between 4 ~ 6 am.
+
+
+```{r}
+taxi_train <- taxi_train %>%
+    mutate(trip_4_6_am = ifelse(hour_trip_start %in% c(4,5), "Yes", "No")) %>%
+    select(-hour_trip_start)
+
+taxi_test <- taxi_test %>%
+    mutate(trip_4_6_am = ifelse(hour_trip_start %in% c(4,5), "Yes", "No")) %>%
+    select(-hour_trip_start)
+
+```
+
+ *p.s. I couldn't get the interaction model to work unless I reduced the factors in this variable, so this step was rather necessary...*
+
+## dow
+
+```{r, cache=TRUE}
+taxi_train %>% group_by(dow) %>%
+    summarise(tip_mean = mean(tip_amount)) %>%
+    ggplot(aes(x=dow, y=tip_mean)) + geom_point() + geom_line(aes(group = 1), linetype="dotted") + labs(title = "Average Tip Amount by Day", x = "Day of the Week", y = "Average $")
+```
+
+There's difference less than $0.3 between thursday (max tip amount) and saturday (min tip amount), which is not much. Saturday trips seem to might have significantly less tips than the rest.
+
+
+## fare_amount
+
+
+
+```{r}
+# How many trips have fare amount $0?
+taxi_train %>% filter(fare_amount == 0) %>% nrow()
+
+taxi_train %>% filter(fare_amount == 0) %>% select(fare_amount, extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, total_amount) %>% head(20)
+```
+
+Some values with fare amount = \$0 seem to have its true value of fare amount in the tolls amount column. Creating new correct variable to represent the true fare amount.
+
+```{r}
+taxi_train <- taxi_train %>% mutate(fare_amount_correct = ifelse(fare_amount == 0, tolls_amount, fare_amount),
+               tolls_amount_correct = ifelse(fare_amount == 0, fare_amount, tolls_amount)) 
+
+taxi_test <- taxi_test %>% mutate(fare_amount_correct = ifelse(fare_amount == 0, tolls_amount, fare_amount),
+               tolls_amount_correct = ifelse(fare_amount == 0, fare_amount, tolls_amount)) 
+
+# check again
+taxi_train %>% filter(fare_amount_correct == 0)  %>% select(fare_amount_correct, extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, total_amount)
+
+# check tip_amount
+taxi_train %>% filter(fare_amount_correct == 0, tip_amount > 0) %>% select(fare_amount_correct, extra, mta_tax, tip_amount, tolls_amount, improvement_surcharge, total_amount)
+```
+
+There are still very few trips where their true fare amount is recorded in the tip amount column. Let's be resourceful and fix and use those values.
+
+```{r}
+taxi_train <- taxi_train %>% mutate(
+    fare_amount_correct2 = ifelse(fare_amount_correct == 0 & tip_amount > 0, tip_amount, fare_amount_correct),
+    tip_amount_correct = ifelse(fare_amount_correct == 0 & tip_amount > 0, fare_amount_correct, tip_amount)) 
+
+
+taxi_test <- taxi_test %>% mutate(
+    fare_amount_correct2 = ifelse(fare_amount_correct == 0 & tip_amount > 0, tip_amount, fare_amount_correct),
+    tip_amount_correct = ifelse(fare_amount_correct == 0 & tip_amount > 0, fare_amount_correct, tip_amount)) 
+
+# any more values with fare amount = $0?
+taxi_train %>% filter(fare_amount_correct2 == 0 & (tip_amount_correct > 0 | tolls_amount_correct > 0))
+
+# Removing incorrect columns and renaming new corrected columns
+taxi_train <- taxi_train %>%
+    select(-c(tip_amount, tolls_amount, fare_amount, fare_amount_correct)) %>%
+    rename(fare_amount = fare_amount_correct2, tip_amount = tip_amount_correct, tolls_amount = tolls_amount_correct)
+taxi_test <- taxi_test %>%
+    select(-c(tip_amount, tolls_amount, fare_amount, fare_amount_correct)) %>%
+    rename(fare_amount = fare_amount_correct2, tip_amount = tip_amount_correct, tolls_amount = tolls_amount_correct)
+```
+
+NYC's taxi website states that trips initially charge $2.50 for base fare. We'll subset the dataset accordingly.
+
+https://www1.nyc.gov/site/tlc/passengers/taxi-fare.page
+
+https://en.wikipedia.org/wiki/Taxicabs_of_New_York_City (Above pricing is in effect since 2012.)
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(fare_amount >= 2.5)
+taxi_test <- taxi_test %>%
+    filter(fare_amount >= 2.5)
+```
+
+
+
+
+
+## VendorID
+```{r, cache=TRUE}
+# Number of trips by VendorID
+table(taxi_train$VendorID)
+
+# Unique values within variable
+unique(taxi_train$VendorID, na.rm=FALSE)
+
+quantile = rep(c("0%", "25%", "50%", "75%", "100%"), 2)
+
+# Comparing similarity
+## Comparing quantiles
+taxi_train %>% group_by(VendorID) %>%
+    summarise(quantile(tip_amount)) %>%
+    bind_cols("quantile" = quantile)
+
+## Comparing Distribution
+taxi_train %>% filter(tip_amount > 0 & tip_amount < 30) %>%
+    ggplot(aes(x=tip_amount)) + geom_histogram() + facet_wrap(VendorID ~ .) + labs(title = "Tip Amount by VendorID", x = "Tip Amount $", y = "# Trips")
+```
+
+
+Not much seems special about this variable. The two vendors each share about half of the taxis, their inner quantile values are very similar, and their distribution seem almost identical. It seems unlikely that this variable would be of any use for our goal of prediction, hence will be removed.
+
+```{r}
+taxi_train <- taxi_train %>% 
+    select(-VendorID)
+taxi_test <- taxi_test %>% 
+    select(-VendorID)
+```
+
+## RatecodeID
+
+```{r}
+# Removing non-specified RatecodeID
+taxi_train <- taxi_train %>%
+    filter(RatecodeID %in% c(1,2,3,4,5,6))
+taxi_test <- taxi_test %>%
+    filter(RatecodeID %in% c(1,2,3,4,5,6))
+
+# Renaming RatecodeID
+taxi_train <- taxi_train %>% mutate(
+    RatecodeID_label = fct_recode(factor(RatecodeID), 
+                                  "Standard_Rate" = "1",
+                                  "JFK" = "2",
+                                  "Newark" = "3",
+                                  "Nassau_Westchester" = "4",
+                                  "Neogitated_Fare" = "5",
+                                  "Group_Ride" = "6")
+)
+
+taxi_test <- taxi_test %>% mutate(
+    RatecodeID_label = fct_recode(factor(RatecodeID), 
+                                  "Standard_Rate" = "1",
+                                  "JFK" = "2",
+                                  "Newark" = "3",
+                                  "Nassau_Westchester" = "4",
+                                  "Neogitated_Fare" = "5",
+                                  "Group_Ride" = "6")
+)
+
+taxi_train = select(taxi_train, -RatecodeID)
+taxi_test = select(taxi_test, -RatecodeID)
+
+# Unique ratecodes
+unique(taxi_train$RatecodeID_label, na.rm=FALSE)
+
+# Number of trips by ratecode
+taxi_train %>% group_by(RatecodeID_label) %>%
+    summarise(n())
+
+
+```
+
+Only one group ride left in the dataset. It's likely that test dataset will contain very few of them as well, hence it will be removed for the purposes of model optimisation.
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(RatecodeID_label != "Group_Ride") %>%
+    mutate(RatecodeID_label = factor(RatecodeID_label))
+taxi_test <- taxi_test %>%
+    filter(RatecodeID_label != "Group_Ride") %>%
+    mutate(RatecodeID_label = factor(RatecodeID_label))
+```
+
+Almost all of the trips are standard rated. JFK rate trips come second consisting about 2% of the data set, and they are the \$52 flat rate trips.
+
+```{r}
+# JFK trips
+## Train data
+taxi_train %>% 
+    filter(RatecodeID_label == "JFK") %>%
+    group_by(fare_amount) %>%
+    summarise(Frequency = n()) %>%
+    arrange(desc(Frequency))
+## Test data
+taxi_test %>% 
+    filter(RatecodeID_label == "JFK") %>%
+    group_by(fare_amount) %>%
+    summarise(Frequency = n()) %>%
+    arrange(desc(Frequency))
+```
+
+```{r}
+# Removing JFK trips with fare amount not eqaul to $52
+taxi_train <- taxi_train %>%
+    filter(RatecodeID_label != "JFK" | fare_amount == 52) 
+taxi_test <- taxi_test %>%
+    filter(RatecodeID_label != "JFK" | fare_amount == 52) 
+
+
+```
+
+## trip_duration
+
+First, we'll need to remove trips with duration <= 0. In fact, we'll regard the trips that lasted under 30 seconds as errors. 
+
+
+```{r}
+taxi_train <- taxi_train %>% 
+    filter(trip_duration >= 0.5)
+taxi_test <- taxi_test %>% 
+    filter(trip_duration >= 0.5)
+```
+
+```{r}
+taxi_train %>% ggplot(aes(x=trip_duration)) + geom_histogram() + labs(title = "Number of Trips by Trip Duration", x = "Trip Duarition / minutes", y = "Number of Trips")
+
+taxi_train %>% ggplot(aes(x=trip_duration, y=fare_amount)) + geom_hex() + labs(title = "Fare Amount vs. Trip Duration", x="Trip Duration / minutes", y = "Fare Amount / $")
+
+```
+
+some trips within the dataset went for over 20 hours which is absurd. Some trips clearly don't match its fare amount given their duration, so we'll filter the dataset so that trips longer than an hour must have been charged $0.5 per minute (based on fare rate '50c per 1/5th mile or 60 seconds'). 
+
+Some trips are charged way too much with respect to their trip duration. We'll pose another limit on the dataset. The highest posted speed limit in New York is 65 mph (https://en.wikipedia.org/wiki/Speed_limits_in_the_United_States_by_jurisdiction#). Therefore, at maximum, taxis can drive $\frac{65}{60}$ miles per minute and earn $\frac{65}{60} \times 2.5$ ($.50 per 1/5th mile) per minute. Trips with fare amount greater than \$60 will be affected by this filtering.
+
+*p.s. I had to use hex plot instead of points because it would take too long to generate the plot.*
+
+```{r}
+# Data filtering
+taxi_train <- taxi_train %>% 
+    filter(trip_duration < 60 | fare_amount > .5 * trip_duration) %>% # absurdly long trips
+    filter(fare_amount < 60 | fare_amount < (65/60) * 2.5 * trip_duration + 2.5) # absurdly expensive trips
+
+taxi_test <- taxi_test %>% 
+    filter(trip_duration < 60 | fare_amount > .5 * trip_duration) %>% # absurdly long trips
+    filter(fare_amount < 60 | fare_amount < (65/60) * 2.5 * trip_duration + 2.5) # absurdly expensive trips
+```
+
+```{r}
+taxi_train %>% ggplot(aes(x=trip_duration, y=fare_amount)) + geom_hex() + labs(title = "Fare Amount vs. Trip Duration: Filtered", x="Trip Duration / minutes", y = "$")
+```
+
+Looking much more reasonable.
+
+## trip_distance
+
+First, remove trips with distance < 0.2 miles.
+
+```{r}
+taxi_train = filter(taxi_train, trip_distance > 0.2)
+taxi_test = filter(taxi_test, trip_distance > 0.2)
+
+taxi_train %>% ggplot(aes(x=trip_distance)) + geom_histogram() + labs(title = "Number of Trips by Trip Distance", x = "Trip Distance / miles", y = "Number of Trips")
+taxi_train %>% ggplot(aes(x=trip_distance, y=fare_amount)) + geom_hex() + labs(title = "Fare Amount vs. Distance", x = "Trip Distance / miles", y = "Fare Amount / $")
+```
+
+Similar to `trip_duration`, some of longest trips don't match its fare amount. Based on fare rate, trips over 30 miles must be charged at least \$1.00 (heavily relaxed from \$2.50/m to account for traffic) per mile. 
+
+Trips more expensive than $40 also must have been charged at most \$4 per mile (also relaxed, in real situation taxis can't charge more than \$2.5 per mile.).
+
+
+```{r}
+# Filter
+taxi_train <- taxi_train %>%
+    filter(trip_distance < 30 | fare_amount > trip_distance) %>%
+    filter(fare_amount < 40 | fare_amount < 4 * trip_distance + 2.5)
+    
+taxi_test <- taxi_test %>%
+    filter(trip_distance < 30 | fare_amount > trip_distance) %>%
+    filter(fare_amount < 40 | fare_amount < 4 * trip_distance + 2.5)
+```
+
+```{r}
+taxi_train %>% ggplot(aes(x=trip_distance, y=fare_amount)) + geom_hex() + labs(title = "Fare Amount vs. Distance: Filtered", x = "Trip Distance / miles", y = "Fare Amount / $")
+```
+
+## Passenger Count
+
+```{r}
+# Number of trips by passenger count
+taxi_train %>% group_by(passenger_count) %>%
+    summarise(Frequency = n())
+
+```
+
+Valid number of passengers seem to be between 1 ~ 6. 
+
+NYC's taxi website states... 
+
+* "The maximum amount of passengers allowed in a yellow taxicab by law is four (4) in a four (4) passenger taxicab or five (5) passengers in a five (5) passenger taxicab, except that an additional passenger must be accepted if such passenger is under the age of seven (7) and is held on the lap of an adult passenger seated in the rear." 
+
+https://www1.nyc.gov/site/tlc/passengers/passenger-frequently-asked-questions.page#:~:text=The%20maximum%20amount%20of%20passengers,of%20an%20adult%20passenger%20seated
+
+
+Filtering out the data...
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(passenger_count > 0 & passenger_count <= 6)
+taxi_test <- taxi_test %>%
+    filter(passenger_count > 0 & passenger_count <= 6)
+```
+
+
+
+## Pickup/Dropoff co-ordinates
+
+First, make a sample to fit maps quickly.
+
+```{r}
+library(leaflet)
+taxi_sample = sample_n(taxi_train, 1000)
+
+leaflet(taxi_sample) %>%
+    addTiles %>%
+    addCircleMarkers(~pickup_longitude,~pickup_latitude, radius=2,stroke = FALSE, opacity=1, fillOpacity =1)
+```
+
+There are trips with wrong co-ordinates in the data, and they will be filtered out.
+
+```{r}
+# pickup coordinates
+pickup_min_lat <- 40.494
+pickup_max_lat <- 40.918
+pickup_min_long <- -74.256
+pickup_max_long <- -73.700
+
+# dropoff coordinates - wider than pickup region
+dropoff_min_lat <- 39.142
+dropoff_max_lat <- 41.926
+dropoff_min_long <- -76.318
+dropoff_max_long <- -71.272
+
+taxi_sample <- taxi_sample %>% 
+    filter(pickup_longitude > pickup_min_long, 
+           pickup_longitude < pickup_max_long, 
+           pickup_latitude > pickup_min_lat, 
+           pickup_latitude < pickup_max_lat,
+           dropoff_longitude > dropoff_min_long,
+           dropoff_longitude < dropoff_max_long,
+           dropoff_latitude > dropoff_min_lat,
+           dropoff_latitude < dropoff_max_lat)
+
+# try plotting again with filtered set
+
+## pickup
+leaflet(taxi_sample) %>% 
+  addTiles() %>% 
+  addCircleMarkers(~pickup_longitude,~pickup_latitude, radius=2,stroke = FALSE, opacity=1, fillOpacity =1)
+
+## dropoff
+leaflet(taxi_sample) %>% 
+  addTiles() %>% 
+  addCircleMarkers(~dropoff_longitude,~dropoff_latitude, radius=2,stroke = FALSE, opacity=1, fillOpacity =1)
+```
+
+```{r}
+# Filter
+taxi_train <- taxi_train %>% 
+    filter(pickup_longitude > pickup_min_long, 
+           pickup_longitude < pickup_max_long, 
+           pickup_latitude > pickup_min_lat, 
+           pickup_latitude < pickup_max_lat,
+           dropoff_longitude > dropoff_min_long,
+           dropoff_longitude < dropoff_max_long,
+           dropoff_latitude > dropoff_min_lat,
+           dropoff_latitude < dropoff_max_lat) %>%
+    select(-c(pickup_longitude, pickup_latitude, dropoff_longitude, dropoff_latitude))
+
+taxi_test <- taxi_test %>% 
+    filter(pickup_longitude > pickup_min_long, 
+           pickup_longitude < pickup_max_long, 
+           pickup_latitude > pickup_min_lat, 
+           pickup_latitude < pickup_max_lat,
+           dropoff_longitude > dropoff_min_long,
+           dropoff_longitude < dropoff_max_long,
+           dropoff_latitude > dropoff_min_lat,
+           dropoff_latitude < dropoff_max_lat) %>%
+    select(-c(pickup_longitude, pickup_latitude, dropoff_longitude, dropoff_latitude))
+```
+
+
+
+
+## store_and_fwd_flag
+
+```{r}
+# quantile
+taxi_train %>% group_by(store_and_fwd_flag) %>% summarise(quantile(tip_amount)) %>%
+    bind_cols("quantile" = quantile)
+# Number of trips
+taxi_train %>% group_by(store_and_fwd_flag) %>% summarise(n())
+# Distribution
+taxi_train %>% filter(tip_amount < 10) %>% ggplot(aes(x=tip_amount)) + geom_density() + facet_wrap(store_and_fwd_flag ~ .)
+
+
+```
+
+Similar inner quantiles and distribution given large difference in group size: no anomalies here. Whether a trip had connection to the network shouldn't have any effect to the tip amount. This variable \ don't seem useful for our use.
+
+```{r}
+taxi_train <- taxi_train %>%
+    select(-store_and_fwd_flag)
+taxi_test <- taxi_test %>%
+    select(-store_and_fwd_flag)
+```
+
+
+## extra
+
+```{r}
+# Number of trips
+taxi_train %>% 
+    group_by(extra) %>%
+    summarise(n())
+```
+
+We know that extras can only be charged either by \$0.50 or \$1 and not both. \$1.00 rush hour charge is in effect during 4pm - 8pm, and \$0.50 overnight surcharge is in effect during 8pm - 6am. We'll also factor the 3 available amounts.
+
+```{r}
+taxi_train <- taxi_train %>%
+    filter(extra == 0 | extra == 0.5 | extra == 1) %>%
+    mutate(extra = factor(extra, ordered = FALSE))
+
+taxi_test <- taxi_test %>%
+    filter(extra == 0 | extra == 0.5 | extra == 1) %>%
+    mutate(extra = factor(extra, ordered = FALSE))
+```
+
+
+## mta_tax
+
+```{r}
+# Number of trips
+taxi_train %>% 
+    group_by(mta_tax) %>%
+    summarise(nrow = n())
+```
+
+MTA State Surcharge is for all trips that end in New York City or Nassau, Suffolk, Westchester, Rockland, Dutchess, Orange or Putnam Counties. It is not surprising that over 99% of our trips are charged with mta tax. This variable will be removed.
+
+```{r}
+taxi_train <- taxi_train %>%
+    select(-mta_tax)
+taxi_test <- taxi_test %>%
+    select(-mta_tax)
+```
+
+## tolls_amount
+
+```{r}
+taxi_train %>% 
+    ggplot(aes(x=tolls_amount)) +
+    geom_histogram() + labs(title = "Number of Trips by Tolls Amount", x="Tolls Amount / $", y="Number of Trips")
+
+# Number of Trips with high tolls amount
+taxi_train %>% filter(tolls_amount > 30) %>% nrow()
+
+# Trips with high tolls amount
+taxi_train %>% filter(tolls_amount > 30) %>% select(trip_duration, trip_distance, tolls_amount, fare_amount, tip_amount, total_amount)
+```
+
+There are some trips with high tolls amount. But nothing special.
+
+## improvement_surcharge
+
+```{r}
+# Number of Trips
+taxi_train %>%
+    group_by(improvement_surcharge) %>%
+    summarise(n())
+```
+
+Pretty much all of the trips have improvement surcharge. This variable won't be useful.
+
+```{r}
+# Deleting variable
+taxi_train <- taxi_train %>% select(-improvement_surcharge)
+taxi_test <- taxi_test %>% select(-improvement_surcharge)
+```
+
+## tip_amount
+
+```{r}
+# tip amount distribution
+taxi_train %>% ggplot(aes(x=tip_amount)) + geom_boxplot()
+```
+
+There are many outliers.
+
+```{r}
+# quantile
+quantile(taxi_train$tip_amount)
+
+# Highest tip amounts
+taxi_train %>%
+    select(trip_distance, trip_duration, tolls_amount, total_amount, fare_amount, tip_amount) %>%
+    arrange(desc(tip_amount))
+
+```
+
+Most tips are between \$1 ~ \$3. Max quantile indiciates presence of very distant outliers. Tip amount don't seem to have direct relationship with fare amount.
+
+
+# Model Fitting
+
+Removing unnecessary variables, and adding `log1p(tip_amount)` because 
+
+1. tip amount can't be negative 
+2. there are lots of trips with \$0 tips: standard `log` will generate `-Inf` values. 
+
+Since most monetary variables have small values, they will be converted to cents to help the model fitting process. Doing this will also make the varaible to be affected by +1 bias caused by `log1p`. transformation.
+
+```{r}
+
+taxi_train <- taxi_train %>% 
+    mutate(tip_amount = tip_amount * 100, # dollar to cents
+           tolls_amount = tolls_amount * 100,
+           fare_amount = fare_amount * 100) %>%
+    mutate(log_tip_amount = log1p(tip_amount)) %>% # log transformation
+    select(-c(dropoff_datetime, pickup_datetime, total_amount, tip_amount))
+
+taxi_test <- taxi_test %>% 
+    mutate(tip_amount = tip_amount * 100,
+           tolls_amount = tolls_amount * 100,
+           fare_amount = fare_amount * 100) %>%
+    mutate(log_tip_amount = log1p(tip_amount)) %>%
+    select(-c(dropoff_datetime, pickup_datetime, total_amount, tip_amount))
+
+colnames(taxi_train)
+colnames(taxi_test)
+```
+
+
+
+cross-validate
+
+```{r}
+allyhat<-function(xtrain, ytrain, xtest,lambdas,nvmax=50){
+  n<-nrow(xtrain)
+  yhat<-matrix(nrow=nrow(xtest),ncol=length(lambdas))
+  search<-regsubsets(xtrain,ytrain, nvmax=nvmax, method="back")
+  summ<-summary(search)
+  for(i in 1:length(lambdas)){
+    penMSE<- n*log(summ$rss)+lambdas[i]*(1:nvmax)
+    best<-which.min(penMSE)  #lowest AIC
+    betahat<-coef(search, best) #coefficients
+    xinmodel<-cbind(1,xtest)[,summ$which[best,]] #predictors in that model
+    yhat[,i]<-xinmodel%*%betahat
+  }
+  yhat
+}
+```
+
+
+
+Linear
+
+```{r}
+set.seed(1)
+mf_linear <- model.frame(log_tip_amount ~ ., data = taxi_train)
+X_linear <- model.matrix(log_tip_amount ~ ., mf_linear)
+X_linear <- X_linear[,-1]
+y = taxi_train$log_tip_amount
+
+n<-nrow(X_linear)
+folds<-sample(rep(1:10,length.out=n))
+lambdas <- c(1,5,10,50,100,150,200,1000, 10000, 10000000, 100000000000000000000000) # Note the values
+fitted<-matrix(nrow=n,ncol=length(lambdas))
+for(k in 1:10){
+  train <- (1:n)[folds!=k]
+  test <-(1:n)[folds==k]
+  fitted[test,]<-allyhat(X_linear[train,],y[train],X_linear[test,],lambdas,nvmax = 18)
+}
+lmbadas_MSPE_linear = colMeans((y-fitted)^2)
+lmbadas_MSPE_linear
+```
+
+Lambda value does not have much effect on MSPE. Selecting labmda = 5...
+
+```{r, warning=FALSE}
+set.seed(2)
+# test MSPE
+search = regsubsets(X_linear, y, nvmax = 18, method = "backward")
+summ = summary(search)
+aic = n*log(summ$rss)+5*(1:18)
+best = which.min(aic)
+betahat = coef(search, best)
+#coefficients
+exp(betahat)[-1]
+
+test_mf = model.frame(log_tip_amount ~ ., data = taxi_test)
+X_test_linear = model.matrix(log_tip_amount ~ ., data = test_mf)
+X_test_linear = X_test_linear[,-1]
+y_test = taxi_test$log_tip_amount
+
+Xpred = cbind(1, X_test_linear)[,summ$which[best,]]
+fitted = Xpred%*%betahat
+
+linear_MSPE = mean((exp(y_test) - exp(fitted))^2) # exp() needed for back-transformation to cents
+linear_MSPE
+```
+
+The model predicts with an average absolute error of `sqrt(680605.1)` = 824c = 8.24\$ per trip. This is a big error considering how average tip amount is about \$2.5 
+
+The model uses all the variables given, and the most affecting variable in the model is the RatecodeID. Standard rate trips (base of the model) are likely to receive more tips than all other rated trips. Their minimum percentage difference is 21% (1 - 0.79,JFK) and maximum is 86% (1 - 0.14, Negotiated_Fare). Day of the week did not have much effect as all of percentage differences between monday and other days are within 5%. More extra charges meant more tip_amount, but not by much. Surprisingly, trips that started between 4 ~ 6 am were expected to earn less tips in this model which is opposite to earlier analysis's prediction. All other variables such as passenger count and trip distance have negligible effect on the tip amount. 
+
+As to why there's such a big error, the model could not predict whether a trip received zero tips, and the squared error of those trips probably inflated the overall MSPE.
+
+```{r}
+colnames(fitted) = "prediction"
+cbind(y_test, fitted) %>% as.tibble() %>% filter(y_test == 0)
+```
+
+Trips with non-zero trips have predicted reasonably well.
+
+```{r}
+cbind(y_test, fitted) %>% as.tibble() %>% filter(y_test != 0)
+
+```
+
+## Interaction
+
+```{r,warning=FALSE}
+
+set.seed(3)
+mf_interx <- model.frame(log_tip_amount ~ .^2, data = taxi_train)
+X_interx <- model.matrix(log_tip_amount ~ .^2, mf_interx)
+X_interx <- X_interx[,-1]
+y = taxi_train$log_tip_amount
+
+n<-nrow(X_interx)
+folds<-sample(rep(1:10,length.out=n))
+lambdas <- c(1, 5,50,200, 10000000, 100000000000000000000000)
+fitted<-matrix(nrow=n,ncol=length(lambdas))
+for(k in 1:10){
+  train <- (1:n)[folds!=k]
+  test <-(1:n)[folds==k]
+  fitted[test,]<-allyhat(X_interx[train,],y[train],X_interx[test,],lambdas,nvmax = 40)
+}
+lmbadas_MSPE_interx = colMeans((y-fitted)^2)
+lmbadas_MSPE_interx
+```
+
+Interactions don't seem to help finding a good model. Lambda value must be ridiculasily large in order to find the model with an acceptable MSPE.
+
+
+
+```{r, warning=FALSE}
+set.seed(4)
+# test MSPE
+search = regsubsets(X_interx, y, nvmax = 40, method = "backward")
+summ = summary(search)
+aic = n*log(summ$rss)+100000000000000000000000*(1:40)
+best = which.min(aic)
+betahat = coef(search, best)
+betahat
+
+X_test_mf = model.frame(log_tip_amount ~ .^2, data = taxi_test)
+X_test_interx = model.matrix(log_tip_amount ~.^2, data = X_test_mf)
+X_test_interx = X_test_interx[,-1]
+
+
+Xpred = cbind(1, X_test_interx)[,summ$which[best,]]
+fitted = Xpred%*%betahat
+
+interx_MSPE = mean((exp(y_test) - exp(fitted))^2) # exp() needed for back-transformation to real-cents
+interx_MSPE
+
+
+```
+
+Given how most variables were proven to be ineffective in the linear model, it's no surprise that `regsubsets` had difficulty finding a good model. The best model chosen with ridiculously large lambda includes only one varaible: fare amount. The average error is `sqrt(4644844)` = 2155c = 21.55$ which is a lot worse than the linear model.
+
+## Lasso
+
+```{r, warning=FALSE}
+set.seed(5)
+lasso_taxi = glmnet(X_interx, y)
+lasso_taxi_cv = cv.glmnet(X_interx, y)
+
+plot(lasso_taxi)
+plot(lasso_taxi_cv)
+```
+
+
+```{r}
+interx_lasso_pred = predict(lasso_taxi, X_test_interx, s = lasso_taxi_cv$lambda.min)
+coef(lasso_taxi, s=lasso_taxi_cv$lambda.min)
+# MSPE
+mean((exp(y_test) - exp(interx_lasso_pred))^2)
+```
+
+Lasso regression predicts far better with average `sqrt(34309.22)` = 185c = 1.85$.
+
+## Ridge
+
+```{r}
+set.seed(6)
+ridge_taxi = glmnet(X_interx, y, alpha = 0)
+ridge_taxi_cv = cv.glmnet(X_interx, y, alpha = 0)
+```
+
+```{r}
+plot(ridge_taxi)
+plot(ridge_taxi_cv)
+coef(ridge_taxi, s=ridge_taxi_cv$lambda.min)
+```
+
+```{r}
+interx_ridge_pred = predict(ridge_taxi, X_test_interx, s = ridge_taxi_cv$lambda.min)
+coef(ridge_taxi, s=ridge_taxi_cv$lambda.min)
+# MSPE
+mean((exp(y_test) - exp(interx_ridge_pred))^2)
+
+```
+
+
+Ridge regression predicts slightly worse than lasso, with average `sqrt(36511.65)` = 191c = 1.91$. Possible reason for this might be that ridge model is using more variables than lasso model, and we know from standard linear/interaction models that a lot of these variables are not particularily useful.
+
+
+# Conclusion
+
+All of the models I've built are not reliable for accurate prediction. Linear model proved that most variables left after the cleaning process weren't particularily useful, therefore interaction model also did not perform well. Lasso and Ridge regression both performed much better than the standard linear/interaction models, bringing the mean prediction error from ~\$8 to ~\$2, however, this error is still very large. I suspect the general reason for the bad performance is the variables' incapability of catching the arbitrarity of the outliers. There are many big outlier-passengers who tipped a lot, and it is unlikely that it had anything to do with the trip information. Understandable reasons for hefty tips might include the kindness of the driver or the passenger's mood of the day, and these are not instilled in the dataset. 
+
+*p.s. factoring all the trip start hours (which I couldn't with my gear) may have resulted in better performance, but I doubt it.*
