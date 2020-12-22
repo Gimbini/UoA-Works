@@ -1,0 +1,137 @@
+---
+title: "Spam Detection"
+author: "Bin Kim"
+date: "10/6/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(ranger)
+library(rpart)
+library(janitor)
+load("spam.rda")
+wordmatrix_original = wordmatrix
+```
+
+## PLEASE NOTE
+
+I have forgot to submit this markdown file along with the html file that I submitted before the deadline, but the code is EXACTLY the same as shown in html file.  My sincere apologies for this mistake.
+
+# Q1. 
+
+```{r}
+set.seed(763)
+wordmatrix = as.data.frame(wordmatrix)
+
+# cleaning column names
+wordmatrix = janitor::clean_names(wordmatrix)
+spam_df = cbind(is_spam=df$is_spam, wordmatrix)
+
+# map for colnames(wordmatrix_original) -> colnames(spam_df)
+spam_col_map = matrix(NA, nrow = 1, ncol = 630)
+colnames(spam_col_map) = colnames(wordmatrix_original)
+spam_col_map[1,] = colnames(wordmatrix)
+
+spam_tree = rpart(factor(is_spam) ~ ., data=spam_df)
+printcp(spam_tree)
+plotcp(spam_tree)
+```
+
+Threshold = 0.36011 + 0.021420 = 0.38153. No prunning required as the second most complex tree's xerror (0.38822) is greater than the threshold.
+
+```{r}
+plot(spam_tree)
+
+# confusion matrix
+tree_cm = table(actual=spam_df$is_spam, predicted=predict(spam_tree, wordmatrix, type = "class"))
+tree_cm
+```
+
+Interesting shape of the tree: all of the splits except one are done at the left side of the parent node. This probably means that the tree algorithm is exploiting certain set of words that occur frequently in the spam messages.
+
+```{r}
+spam_tree
+```
+
+The tree sequentially determines whether a given text message does NOT (w_ < 0.5) include words "Call" (w_call_2), "www", ..., "collection", "awarded", and if it does, with the exception of the first split word "Call", it immediately classifies the message as spam. If the text message contains words "Call" AND "me", then the tree classifies the text as Non-spam, and spam otherwise. 
+
+The strategy formed by the tree seems quite intuitive. 
+
+# Q2.
+
+```{r}
+# get y_i, n_i
+spam_yi_ni <- spam_df %>%
+    group_by(is_spam) %>%
+    summarise(across(everything(),sum)) %>%
+    arrange(desc(is_spam))
+
+spam_yi_ni
+
+```
+
+```{r}
+# Transpose spam_yi_ni to make common words the subject, then use mutate to get e_i
+spam_e_i = spam_yi_ni %>%
+    select(-is_spam) %>%
+    rownames_to_column() %>%
+    pivot_longer(-rowname, 'common_words', 'value') %>%
+    pivot_wider(common_words, rowname) %>%
+    rename("y_i" = "1", "n_i" = "2") %>%
+    mutate(e_i = log(y_i + 1) - log(n_i + 1))
+    
+spam_e_i
+```
+
+```{r}
+nbc = NULL
+for (txt_index in 1:nrow(wordmatrix_original)) { # for every text message
+    nbc_i = 0 # txt_i's Naive Bayes Classifier
+    txt_words = df[txt_index,3]
+    for (word in txt_words[[1]]){ # for word in txt's word list
+        word_col = paste("w_",word,sep="")
+        if (word_col %in% colnames(wordmatrix_original)){ # if the word is a common word
+            clean_word = spam_col_map[1, word_col] # using word map created in Q1
+            word_value <- spam_e_i %>% #
+                filter(common_words == clean_word) %>%
+                select(e_i)
+            nbc_i = nbc_i + as.numeric(word_value) # increment nbc_i by word's e_i value
+        }
+    }
+    nbc = c(nbc, nbc_i)
+}
+
+```
+
+```{r, collapse=TRUE}
+final = bind_cols(df, nbc=nbc)
+threshold = -6.65
+nbc_cm = table(actual=final$is_spam, predictions=final$nbc > -.895)
+
+cat("Observed Spam Proportion:", mean(df$is_spam), "\n")
+cat("Naive Bayes Classifier Prediction Proportion:", mean(final$nbc > threshold), "\n", "\n")
+
+nbc_cm
+cat("Naive Bays Classifier Accuracy:", sum(nbc_cm[c(1,4)]) / sum(nbc_cm[c(1,2,3,4)]), "\n")
+cat("Tree Classifier Accuracy:", sum(tree_cm[c(1,4)]) / sum(tree_cm[c(1,2,3,4)]), "\n")
+```
+
+It wasn't hard to guestimate the threshold by trial and error. 
+
+# Q3
+
+## Why is spam/non-spam accuracy likely to be higher with this dataset than in real life?
+
+Because the dataset is not a random sample of one certain txt population. There's no evidence that the spam-to-ham ratio of the dataset is representative of the real world ratio. It seems unlikely that the real world spam message percentage is as high as 13% like it is in the dataset. Training on an inflated dataset will yield inflated accuracy because the algorithm has more false ground to be certain on.
+
+The dataset designer gathered spam and non-spam txts from differenet sources and artificially glued them together, and this allows the algorithm to exploit the populations' characteristics. For example, all of the UK's txt messages are spam and all of the Singaporean txt messages are not. The algorithm may be able to exploit the cultural-linguistical differences between the two populations and use that to predict spam messages. However, in real life datasets, cultural-linguistical differences would not be as diverse because you'd usually be analysing samples from one population/country only. 
+
+## What can you say about the generalisability of the classifier to particular populations of text users?
+
+In theory, heterogeneous data should make these classifiers less effective for a particular population because the dataset does not properly represent any of the population as the data is drawn from many sources. However, the tree may prove to be somewhat useful for because the construction of the tree seem very intuitive to reasonably classify any english text message (as discussed in Q1), and its 96% accuracy is very good for this dataset. The Naive Bayes classifier is still pretty good with 91% accuracy for this dataset, however, the obvious violation of Naive Bayes classifier's independence assumption degrades the validity of this classifier therefore also its genralisability, and its lower accuracy than tree classifier could also partially be attributed to it.
+
+
+
+
+
