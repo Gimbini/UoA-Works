@@ -1,3 +1,3 @@
 # README
 
-This repository contains selected programming assignments that I completed from the University of Auckland. They are two branches: Computer_Science and Statistcs.
+This repository contains selected assignments that I completed from the University of Auckland. You can browse through the two branches named by my main course subjects: Computer_Science and Statistcs.
