@@ -1,0 +1,91 @@
+---
+title: "STATS369 Lab 9"
+author: "Bin Kim bkim763 698518689"
+date: "10/20/2020"
+output: html_document
+---
+
+```{r}
+library(keras)
+library(tidyverse)
+set.seed(4200)
+my_sample<-sample(241600, 50000)
+
+sgemm = read_csv("sgemm_product.csv")
+sgemm = sgemm %>% 
+  rename(Run1 = "Run1 (ms)", Run2 = "Run2 (ms)", Run3 = "Run3 (ms)", Run4 = "Run4 (ms)")
+sgemm = sgemm %>%
+  mutate(logrun1 = log(Run1)) %>%
+  select(-Run1, -Run2, -Run3, -Run4)
+
+
+```
+
+```{r}
+means = apply(sgemm, 2, mean)
+std = apply(sgemm, 2, sd)
+sgemm_scaled = scale(sgemm, center = means, scale = std)
+
+sgemm_x = sgemm_scaled[,-15]
+sgemm_y = sgemm_scaled[,15]
+```
+
+# 1)
+
+```{r}
+model_1 <- keras_model_sequential()
+model_1 %>%
+    layer_dense(units = 8, activation = "relu", input_shape = c(14)) %>%
+    layer_dense(units = 1)
+summary(model_1)
+```
+
+```{r}
+model_1 %>% compile(
+    optimizer = "rmsprop",
+    loss = "mse",
+    metrics = c("mae") 
+)
+```
+
+```{r}
+history <- model_1 %>% fit(
+    sgemm_x, sgemm_y,
+    batch_size = 100,
+    epochs = 60,
+    verbose = 1
+)
+
+plot(history)
+```
+
+
+# 2)
+
+```{r}
+model_1 <- keras_model_sequential()
+model_1 %>%
+    layer_dense(units = 8, activation = "relu", input_shape = c(14)) %>%
+    layer_dense(units = 4, activation = "relu") %>%
+    layer_dense(units = 1)
+summary(model_1)
+```
+
+```{r}
+model_1 %>% compile(
+    optimizer = "rmsprop",
+    loss = "mse",
+    metrics = c("mae") 
+)
+```
+
+```{r}
+history <- model_1 %>% fit(
+    sgemm_x, sgemm_y,
+    batch_size = 100,
+    epochs = 60,
+    verbose = 1
+)
+
+plot(history)
+```
