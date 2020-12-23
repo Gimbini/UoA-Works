@@ -1,0 +1,234 @@
+---
+title: "STATS369 Lab 10"
+author: "Bin Kim bkim763 698518689"
+date: "10/20/2020"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(RSQLite)
+library(DBI)
+library(glmnet)
+```
+
+```{r}
+con = dplyr::src_sqlite("words2.db")
+glove = tbl(con, "glove")
+glove %>% tally() %>% collect()
+
+GoT = read_csv("Game_of_Thrones_Script.csv")
+pos_words = scan("positive-words.txt", blank.lines.skip = TRUE, comment.char = ";", what = "")
+neg_words = scan("negative-words.txt", blank.lines.skip = TRUE, comment.char = ";", what = "")
+```
+
+# Question 1
+
+```{r}
+wordy_characters = GoT %>%
+    group_by(Name) %>%
+    summarise(Num_Sentences = n()) %>%
+    arrange(desc(Num_Sentences))
+
+top_5_wordy = head(wordy_characters$Name,5)
+
+top_5_wordy_season = GoT %>%
+    group_by(Season,Name) %>%
+    summarise(Num_Sentences = n()) %>%
+    arrange(Season, desc(Num_Sentences)) %>%
+    filter(Name %in% top_5_wordy)
+```
+
+```{r}
+ggplot(top_5_wordy_season) + geom_line(aes(Season, Num_Sentences, group=Name, color=Name)) +
+    labs(title = "Top 5 Wordy Characters in GoT", y = "Number of Sentences")
+```
+
+# Question 2
+
+```{r}
+# bag those into training words. 1: positive; 0: negative
+train_words <- tibble(word = c(pos_words, neg_words),
+                      pos = rep(1:0, c(length(pos_words),
+                                       length(neg_words))))
+
+# copy to db
+train_words <- copy_to(con, train_words, name = 'train_words', overwrite = TRUE)
+
+train.df = inner_join(train_words, glove, by = c('word' = 'Word')) %>%
+collect()
+```
+
+```{r}
+# create design matrix for 'glmnet'
+train_x <- train.df %>%
+  select(-word, -pos) %>%
+  as.matrix()
+rownames(train_x) <- train.df$word
+
+# response
+train_y <- train.df$pos
+
+# set test data
+test <- sample(nrow(train_x), nrow(train_x)/5) # 20% as test data
+# logistical model with a mix (50/50) mix of L1 and L2 regularisation.
+fit <- cv.glmnet(train_x[-test,], train_y[-test], family = 'binomial', alpha = 0.5)
+# prediction
+pred <- predict(fit$glmnet.fit, train_x[test,], s = fit$lambda.min)
+```
+
+### Season 1 Words' Sentiment
+
+```{r}
+GoT_s1 = GoT %>%
+    filter(Season == "Season 1")
+
+s1_sentences = GoT_s1$Sentence
+s1_words = lapply(s1_sentences, function(text) {tolower(strsplit(text,"[[:blank:],.!?;:'\"]")[[1]])})
+s1_words = unlist(s1_words)
+s1_unique_words = unique(s1_words)
+
+word_tbl = copy_to(con, tibble(word=s1_unique_words), name = "s1_words", overwrite = TRUE, temporary = TRUE)
+s1_words_matrix <- inner_join(word_tbl, glove, by = c('word' = 'Word')) %>%
+    collect() 
+names_row = c(s1_words_matrix[,"word"])
+s1_words_matrix = data.matrix(s1_words_matrix)
+s1_words_matrix = s1_words_matrix[, 2:301] 
+
+fit <- cv.glmnet(train_x, train_y, family = 'binomial', alpha = 0.5)
+senti <- predict(fit$glmnet.fit, s1_words_matrix, s = fit$lambda.min)
+rownames(senti) = names_row[[1]]
+
+# deleting special characters
+valid_words = !(rownames(senti) %in% c("-", "]", "--"))
+senti = as.matrix(senti[valid_words,1])
+```
+
+### Get sentiment value for each sentence
+
+```{r}
+get_sent_value = function(sentence){
+    words = tolower(strsplit(sentence,"[[:blank:],.!?;:'\"]")[[1]])
+    sent_values = NULL
+    
+    for (word in words) {
+        if (word %in% rownames(senti)){
+            sent_values = c(sent_values, senti[word,1])
+        }
+    }
+    ifelse(is.null(sent_values), 0, mean(sent_values))
+}
+
+sentimental_values = sapply(GoT_s1$Sentence, get_sent_value)
+GoT_s1$Sentiment = sentimental_values
+```
+
+### Calculate Top-5 Wordy Character's Sentiment in Season 1
+
+```{r}
+top_5_sentiments = GoT_s1 %>% 
+    filter(Name %in% top_5_wordy) %>%
+    select(Name, Sentiment) %>%
+    group_by(Name) %>%
+    summarise(Sentiment = mean(Sentiment)) %>%
+    arrange(desc(Sentiment))
+
+top_5_sentiments
+```
+
+# Question 3
+
+```{r}
+# daenerys targaryen
+GoT_dt = GoT %>%
+    filter(Name == "daenerys targaryen")
+
+# building another glmnet just for her
+dt_sentences = GoT_dt$Sentence
+dt_words = lapply(dt_sentences, function(text) {tolower(strsplit(text,"[[:blank:],.!?;:'\"]")[[1]])})
+dt_words = unlist(dt_words)
+dt_unique_words = unique(dt_words)
+
+word_tbl = copy_to(con, tibble(word=dt_unique_words), name = "dt_words", overwrite = TRUE, temporary = TRUE)
+dt_words_matrix <- inner_join(word_tbl, glove, by = c('word' = 'Word')) %>%
+    collect() 
+names_row_dt = c(dt_words_matrix[,"word"])
+dt_words_matrix = data.matrix(dt_words_matrix)
+dt_words_matrix = dt_words_matrix[, 2:301] 
+
+senti_dt <- predict(fit$glmnet.fit, dt_words_matrix, s = fit$lambda.min)
+rownames(senti_dt) = names_row_dt[[1]]
+
+# deleting special characters
+valid_words = !(rownames(senti_dt) %in% c("-", "]", "--"))
+senti = as.matrix(senti_dt[valid_words,1])
+```
+
+```{r}
+dt_sentiments = sapply(GoT_dt$Sentence, get_sent_value)
+GoT_dt$Sentiment = dt_sentiments
+
+GoT_dt %>%
+    select(Season, Episode, Sentiment) %>%
+    group_by(Season, Episode) %>%
+    summarise(Avg_Sentiment = mean(Sentiment)) %>%
+    arrange(Season, Episode) %>%
+    ggplot(aes(x = interaction(factor(Episode, levels = paste("Episode", 1:10)), Season), 
+               y = Avg_Sentiment, group = 1)) + geom_line(color="blue") + 
+    theme(axis.text.x = element_text(angle = 90)) + labs(title = "Daenerys Targaryen's Sentiment over Episodes", x = "Season/Episode", y = "Sentiment Value")
+```
+
+Overall, stays on the positive side with fluctuations over the episodes. Season 1 sentiment seems a bit lower than other seasons, and this is understandable because those were the days of her being rather oppressed. 
+
+
+# Question 4
+
+```{r}
+library(readr)
+library(dplyr)
+library(e1071)
+library(mlbench)
+ 
+#Text mining packages
+library(tm)
+library(SnowballC)
+library("wordcloud")
+library("RColorBrewer")
+```
+
+```{r}
+corpus = Corpus(VectorSource(GoT_dt$Sentence))
+
+#Conversion to Lowercase
+corpus = tm_map(corpus, PlainTextDocument)
+corpus = tm_map(corpus, tolower)
+ 
+#Removing Punctuation
+corpus = tm_map(corpus, removePunctuation)
+ 
+#Remove stopwords
+corpus = tm_map(corpus, removeWords, c(stopwords("english")))
+ 
+# Stemming
+corpus = tm_map(corpus, stemDocument)
+ 
+# Eliminate white spaces
+corpus = tm_map(corpus, stripWhitespace)
+
+DTM <- TermDocumentMatrix(corpus)
+mat <- as.matrix(DTM)
+f <- sort(rowSums(mat),decreasing=TRUE)
+dat <- data.frame(word = names(f),freq=f)
+```
+
+```{r}
+wordcloud(words = dat$word, freq = dat$freq, min.freq = 3, max.words=250, random.order=FALSE, rot.per=0.30, colors=brewer.pal(8, "Dark2"))
+```
+
+
+
+
+
+
+
+
