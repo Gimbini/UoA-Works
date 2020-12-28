@@ -1,0 +1,417 @@
+---
+title: "Coronary Heart Disease rate among New Zealand Population"
+author: 
+- "Bin Kim"
+output: html_document
+ID: 698518689bp.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Cleaning
+```{r}
+hearthealth = read.csv("hearthealth.csv")
+weight = hearthealth$weight
+height = hearthealth$height
+plot(main = "Weight vs Height", weight, height)
+```
+
+In the plot above, we can observe a person with height well above 10m. It is certainly absurd for anyone to be taller than 14m, so this datapoint will be considered as an outlier, and because its weight value is within a normal range, this data point won't be removed but it's height value will be replaced by the group average.
+
+Another person who weighs less than 20kg can be observed. It is possible for this record to be genuine if the person has medical conditions such as dwarfism, however, for the purposes of this report, we will replace its weight value with the group average.
+
+```{r}
+height.avg.no.outlier = mean(height[height < 5])
+hearthealth$height[hearthealth$height > 5] = height.avg.no.outlier
+
+weight.avg.no.outlier = mean(weight[weight > 20])
+hearthealth$weight[hearthealth$weight < 20] = weight.avg.no.outlier
+
+plot(hearthealth$weight, hearthealth$height, xlab = "weight", ylab = "height",
+     main = "Weight vs Height Cleaned")
+```
+```{r}
+plot(hearthealth$sbp, hearthealth$dbp, main = "SBP vs DBP", xlab = "sbp", ylab = "dbp")
+```
+
+There is one obvious outlier whose diastolic blood pressure is above 160mmHg, and as seen from the plot, this point is way above the perceivable trend line. A person is considered to be in a very dangerous health state if the diastolic blood pressure above 120mmHg, so this point will be considered as an outlier and be dealt with. If the values for this person's SBP and DBP were swapped so the person's SBP is around 160mmHg and DBP around 60mmHg, then the point will sit well on the the trendline. Since it is also reasonable to think that the data recorder may have made a mistake and swapped the entries for this persons blood pressure, this outlier will be amended by having its SBP and DBP records swapped.
+
+```{r}
+bp.outlier.row = which(hearthealth$dbp > 160)
+sbp = hearthealth$sbp[bp.outlier.row]
+dbp = hearthealth$dbp[bp.outlier.row]
+## swap DBP & SBP
+hearthealth$sbp[bp.outlier.row] = dbp
+hearthealth$dbp[bp.outlier.row] = sbp
+
+plot(hearthealth$sbp, hearthealth$dbp, main = "SBP vs DBP Cleaned", xlab = "sbp", ylab = "dbp")
+
+```
+```{r cars}
+summary(cars)
+```
+
+There is one more suspicious data point at the lowest end of the trend. Some experts define low blood pressure as readings lower than 90 mm Hg systolic or 60 mm Hg diastolic. Beacuse this point is still within the range of perceivable trend, and this person may be suffering from a very low blood pressure, there won't be any changes made for this point.
+
+# Is there difference in number of eggs cousumed in a week among different ethnicities?
+
+```{r}
+plot(factor(hearthealth$ethnicity), hearthealth$eggs, main = "Ethnicity vs Eggs Consumed per Week", xlab = "Ethnicity", ylab = "Eggs/week")
+```
+
+Māoris seem to consume eggs the most compared to people of other ethnicities, but overall, there doesn't seem to be much difference in the number of eggs consumed between ethnicities. One Māori person consumes 60 eggs per week. This seems unusual but it is certainly not impossible to consume that many eggs per week, so it will remain as is. 
+
+The response variable is a discrete variable which does not allow for negative values, and it's variability is likely to increase as the count gets large. Fitting a Poisson regression model seems to be the best option.
+
+```{r}
+eggs = hearthealth$eggs
+ethnicity = hearthealth$ethnicity
+hearthealth.eggs.fit = glm(eggs ~ ethnicity, family = 'poisson')
+summary(hearthealth.eggs.fit)
+```
+Taking the European ethnicity as baseline, the model suggests siginificant evidence for difference in number of eggs consumed per week compared to Māoris and Polynesians but NOT the ethnicities in Other group.
+
+```{r}
+anova(hearthealth.eggs.fit, test = "Chisq")
+```
+Ethnicity overall does have significant effect on number of eggs consumed per week by the employees.
+```{r}
+coef(hearthealth.eggs.fit)
+cat("Exponentiated coefficients", "\n")
+exp(coef(hearthealth.eggs.fit))
+```
+On average, Eurpean employees consume 2.25 eggs per week. Māori employees consume 4 times that of Europeans, that is 9 eggs per week, and Polynesians consume 1.71 times that of Europeans, that is about 3.9 eggs per week. We do not have significant evidence for difference in consumption between Europeans and Other ethnicities.
+
+```{r}
+ethnicity_re = factor(ethnicity, levels = c("Maori", "Other", "European", "Polynesian"))
+new.eggs.fit = glm(eggs ~ ethnicity_re, family = "poisson")
+summary(new.eggs.fit)
+```
+```{r}
+exp(coef(new.eggs.fit))
+```
+When the baseline for the model changes to Maori, there is evidence to say average number of eggs consumed per week is significantly different for all other ethnicities. On average, Māori employees consume 9 eggs per week, people in Other ethnicity consume about 2.33 eggs which is about 0.26 times that of Māoris, Europeans 2.25 eggs which is 0.25 times that of Māoris, and Polynesians consume about 3.85 eggs which is about 0.43 times that of Māoris.
+
+# Drinking factors
+## Variables at investigation
+**Explanatory**: Age and Gender
+
+**Response**: Alcoholic drinks consumed per day
+
+## Which model would be the most appropriate?
+**Poisson**
+
+1. The response variable is a discrete variable 
+2. Response variable doesn't allow for negative values
+3. The variability of the response variable is likely to increase with the count.
+
+## Model Fitting
+```{r}
+drinkmaxday = hearthealth$drinkmaxday
+age = hearthealth$age
+sex = hearthealth$sex
+
+plot(drinkmaxday ~ age, main = "Drinks/day vs Age", xlab = "Age", ylab = "Drinks/day")
+```
+
+Drinks/day vs Age plot indicates there might be a weak negative relationship. The plot indicates that one interesting candidate consumed 50 drinks in a day within the last 3 months, and to my possibly limited understanding, that is impossible for a human. Therefore, he will be removed from the dataset for this analysis. 
+
+```{r}
+drink.impossible = which(hearthealth$drinkmaxday > 45)
+hearthealth.1 = hearthealth[-drink.impossible,]
+
+drinkmaxday = hearthealth.1$drinkmaxday
+age = hearthealth.1$age
+sex = hearthealth.1$sex
+
+plot(drinkmaxday ~ age, main = "Clean: Drinks/day vs Age", xlab = "Age", ylab = "Drinks/day")
+```
+
+Now it can be observed that the maximum number of drinks consumed per day strongly declines at the age of 60.
+
+```{r}
+plot(drinkmaxday ~ factor(sex), main = "Clean: Drinks/day vs Sex", xlab = "Sex", ylab = "Drinks/day")
+```
+Drinks/day vs Sex plot shows that males on average drink more than the females. The right skew is present in both of the box plots (good sign of fitting a poisson model) and the skew is greater in the male's boxplot.
+
+Testing of model will start from fitting the interaction model which includes the most complex relationship between explanatory vairbles.
+
+```{r}
+alcohol.fit = glm(drinkmaxday ~ age*sex, family = "poisson")
+anova(alcohol.fit, test = "Chisq")
+```
+
+The anova test indicates there's not enough evidence for interaction between the explanatory variables. By pplying Occam's razor, the model will now only include additive terms.
+
+```{r}
+alcohol.fit = glm(drinkmaxday ~ age + sex, family = "poisson")
+anova(alcohol.fit, test = "Chisq")
+```
+Test shows significant evidences for both variables Age and Sex.
+```{r}
+summary(alcohol.fit)
+```
+```{r}
+cat("Raw Coefficients \n")
+coef(alcohol.fit)
+cat("Terms Exponentiated \n")
+exp(coef(alcohol.fit))
+cat("% Difference \n")
+100 * (exp(coef(alcohol.fit)[c(2,3)]) - 1)
+cat("% Difference in 10 years \n")
+100 * (exp(10 * coef(alcohol.fit)[2]) - 1)
+
+```
+Summary shows evidence for the following:
+
+* At the age of 0, female candidates on average would likely to drink about 9 alcohol drinks per day. However, this isn't a meaningful information as we know babies should not consume any alcohol.
+
+* The number of maximum alcoholic drinks consumed per day within the last 3 months is going to decrease by 1.8% every year for all candidates. In ten years, it is expected that the number would decrease by 16.7%.
+
+* Males on average consume 44% more maximum alcoholic drinks per day than females.
+
+```{r}
+cat("Raw Confidence Interval")
+exp(confint(alcohol.fit))
+cat("% Difference \n")
+100 * (exp(confint(alcohol.fit)[c(2,3),]) - 1)
+cat("% Difference in 10 years \n")
+100 * (exp(10 * confint(alcohol.fit)[2,]) - 1)
+```
+With 95% confidence, we can say that:
+
+* The percentage of decrease in number of maximum alcoholic drinks consumed is 1.3% ~ 2.4% per year and 11.8% ~ 21.3% per 10 years.
+
+* The number of maximum alcoholic drinks consumed for males is 20.8% to 72.7% larger than the females.
+
+## Plots and Explanations.
+```{r}
+plot(drinkmaxday ~ age, main = "Drinks/day vs Age", xlab = "Age", ylab = "Drinks/day")
+xx = seq(15, 85, length.out = 300)
+
+new.data.female = data.frame(age = xx, sex = rep("F", 300))
+new.data.male = data.frame(age = xx, sex = rep("M", 300))
+
+yy.female = predict(alcohol.fit, new.data.female, type = "response")
+yy.male = predict(alcohol.fit, new.data.male, type = "response")
+
+lines(xx, yy.female, col = "pink")
+lines(xx, yy.male, col = "blue")
+
+legend("topright", legend = c("Male", "Female"), pch = rep(15, 2), 
+       col = c("blue", "pink"))
+```
+
+The plot suggests that regardless of employee's gender, maximum number of alcoholic drinks consumed per year decreases as they age.
+
+
+The plot also suggests that on average, male employees' maximum number of alcoholic drinks consumed is larger than the female employees across all ages. 
+
+The amount of difference between the two genders in number of maximum drinks consumed decreases as they age. Around the age of 18 where the plot starts, male empoyees on average drink 10 maximum drinks and femlae employees 7. By the age above 80 which is the end of the plot, the maximum number of drinks consumed per day for both genders are around 3. 
+
+```{r}
+comp1 = data.frame(age = c(30, 50), sex = c("M", "M"))
+comp2 = data.frame(age = c(40, 40), sex = c("M", "F"))
+
+cat("Prediction 1 \n")
+predict(alcohol.fit, comp1, type = "response")
+cat("Prediction 2 \n")
+predict(alcohol.fit, comp2, type = "response")
+```
+
+## Comparison: (age=30,sex=M) and (age=50,sex=M)
+
+Prediction 1 predicts estimated number of maximum alcoholic drinks for 2 employees of same gender but of different age using the fitted model. Male employees of age 30 are expected to consume 7.6 maximum drinks, and male employee of age 50 are expected to conssume 5.3 maximum drinks. This tells that age has a 'stand-alone' negative effect on the number of maximum drinks consumed per 3 months regardless of the gender of the employees.
+
+## Comparison: (age=40,sex=M) and (age=40,sex=F)
+
+Prediction 2 predicts estimated number of maximum alcoholic drinks for 2 employees of same age but of different gender using the fitted model. Male employees of age 40 are expected to consume 6.3 maximum drinks, and female employees of age 40 are expected to conssume 4.4 maximum drinks. This tells that gender has a 'stand-alone' negative effect on the number of maximum drinks consumed per 3 months regardless of the age of the employees.
+
+# Relationship between a person's age and their smoking history and the number of hours of vigorous exercise per week.
+
+## Varialbles at investigation
+**Response**: exerhour
+
+**Explanatory**: age, smoke
+
+## Which model is the the most appropriate?
+**Poisson**
+
+1. The response variable is a discrete variable **WRONG** it is continous
+2. Response variable doesn't allow negative values
+3. The variability of the response variable is likely to increase with the count.
+
+**IMPORTANT** Poisson is *NOT* the the most appropriate model. Simple linear model is as the response is continuous. It is true that the response cannot be of negative value, however LM is overall the best model. (Instructor feedback)
+
+## Model Fitting
+```{r}
+exerhour = hearthealth$exerhour
+age = hearthealth$age
+smoke = hearthealth$smoke
+
+plot(exerhour ~ age)
+plot(exerhour ~ factor(smoke))
+```
+No particular outlier in the initial plots. There seems to be negative relationship between age and number of hour exercised, and interestingly the smoker group has more rigorous exercisers.
+```{r}
+exercise.fit = glm(exerhour ~ age*smoke, family = "poisson")
+anova(exercise.fit, test = 'Chisq')
+```
+
+The anova test for above model which assumes interaction between smoke and age does not support significant evidence. Therefore, a simpler additive model will be fitted and tested.
+
+```{r}
+exercise.fit = glm(exerhour ~ age + smoke, family = "poisson")
+anova(exercise.fit, test = 'Chisq')
+```
+
+The additive model passes the anova test
+
+```{r}
+summary(exercise.fit)
+cat("Raw Coefficients \n")
+coef(exercise.fit)
+cat("Coefficients Exponentiated \n")
+exp(coef(exercise.fit))
+cat("% Difference \n")
+100 * (exp(coef(exercise.fit)[c(2,3)])-1)
+cat("% Difference in 10 years \n")
+100 * (exp(10*coef(exercise.fit)[2])-1)
+```
+Under our additive poisson model, we have evidence to suggest the explanatory variables, age and smoke, both have significant effect on the number of hours employees typically exercise per day.
+
+The intercept term suggests that a non-smoking employee of age 0 is expected to exercise 1.8 hours per day. This interpretation however does not produce meaningful information.
+
+Employees are expected to exercise 3.32% less hours each year than previous year under our model. This also means that employees are expected to exercise 28.7% less hours in the next 10 years than now.
+
+Interstingly, employees who ever smoked once a week or more are expected to exercise 205% more hours than non-smoking employees. In other words smokers on average exercise 3 times many hours than non-smokers.
+
+```{r}
+cat("Confidence Interval")
+exp(confint(exercise.fit))
+cat("% Difference \n")
+100 * (exp(confint(exercise.fit)[c(2,3),]) - 1)
+cat("% Difference in 10 years \n")
+100 * (exp(10 * confint(exercise.fit)[2,]) - 1)
+```
+With 95% confidence, we can say that:
+
+* Employees are expected to exercise 1.9% ~ 4.7% less hours every year than the previous year and 17.8% ~ 38.5% less hours in 10 years.
+
+* Employees who ever smoked are expected to exercise 98% to 390% more than the non-smoking employees.
+
+## Plots and Explanations
+
+```{r}
+plot(exerhour ~ age)
+xx = seq(15, 85, length.out = 300)
+
+new.data.smoke = data.frame(age = xx, smoke = rep('Yes', 300))
+new.data.nonsmoke = data.frame(age = xx, smoke = rep('No', 300))
+
+yy.smoke = predict(exercise.fit, new.data.smoke, type = "response")
+yy.nonsmoke = predict(exercise.fit, new.data.nonsmoke, type = "response")
+
+lines(xx, yy.smoke, col = "black")
+lines(xx, yy.nonsmoke, col = "lightgreen")
+legend("topright", legend = c("Smoke", "Non-Smoke"), col = c("black", "lightgreen"), 
+       pch = 15)
+```
+
+Smokers have higher average number of hours exercised per day than the non-smokers across all ages.
+
+Non-smoking group on average virtually does not exercise at all; 1 hour is the average maximum at the age of 18 and it only decreases from there.
+
+The number of hours exercised by employees between smokers and non-smokers differ less as they age. i.e. smoking has more positive effect on the hours exercised for people of younger age. At the age of 18, Smoker group on average exercise around 3.5 hours per day, however at the age above 80, both groups exercise virtually zero hours.
+
+# Is there relationship between a person’s age and cholesterol level status and whether or not they have had a heart attack?
+## Variables at investigation
+**Response**: heartattack
+
+**Explanatory**: age & chol
+
+## Which model is the the most appropriate?
+
+The response variable is:
+
+1. a discrete distribution
+2. modelled best by binomial distribution where $i$th observation is the number of success (of heart attacks) out of $n_i$th trial
+3. accounts for nonconstant variance of $p$ in a sensible way
+
+Therefore logstic regression.
+
+## Model Fitting
+Interaction model will be firstly fitted and tested.
+```{r}
+heartattack = hearthealth$heartattack
+age = hearthealth$age
+cholesterol = hearthealth$chol
+
+ha.fit = glm(heartattack ~ age * cholesterol, family = "binomial")
+
+anova(ha.fit, test = "Chisq")
+```
+Not enough evidence for interaction. Model will be reduced to a simpler additive model.
+```{r}
+ha.fit = glm(heartattack ~ age + cholesterol, family = "binomial")
+anova(ha.fit, test = "Chisq")
+```
+Significant evdince for both additive terms.
+
+```{r}
+summary(ha.fit)
+
+cat("Raw Coefficients \n")
+coef(ha.fit)
+cat("Coefficients Exponentiated \n")
+exp(coef(ha.fit))
+cat("& Difference \n")
+100*(exp(coef(ha.fit)[c(2,3)])-1)
+cat("& Difference in 10 years \n")
+100*(exp(10*coef(ha.fit)[2])-1)
+```
+We have evidence to suggest that both age and cholestrol level has siginificant impact on the chances of employees ever having a heart attack.
+
+Under this model, the chance of employees ever getting a heart attack increases by 10% every year than the previous year. In 10 years time, the chance would have increased by 177%.
+
+Employees with low cholesterol level are expected to have 86% less chance than employees with high cholestorl level.
+
+```{r}
+cat("Confidence Interval")
+exp(confint(ha.fit))
+cat("& Difference \n")
+100*(exp(confint(ha.fit)[c(2,3),])-1)
+cat("& Difference in 10 years \n")
+100*(exp(10*confint(ha.fit)[2,])-1)
+```
+Under this model, it can be said with 95% confidence that:
+
+* The chances of employees having a heart attack increases 4.4% ~ 19.7% each year than the previous year. In 10 years, the chance would have increased by 54% ~ 502%.
+
+* Employees with low cholesterol level are expected to have 7.2% ~ 98.2% less chance of ever having a heart attack than employees with high cholesterol level.
+
+## Plots and Explanations
+
+```{r}
+plot(heartattack ~ age)
+
+xx = seq(15, 85, length.out = 300)
+
+new.data.highc = data.frame(age = xx, cholesterol = rep("High", 300))
+new.data.lowc = data.frame(age = xx, cholesterol = rep("Low", 300))
+
+yy.highc = predict(ha.fit, new.data.highc, type = "response")
+yy.lowc = predict(ha.fit, new.data.lowc, type = "response")
+
+lines(xx, yy.highc, col = "red")
+lines(xx, yy.lowc, col = "green")
+
+legend("topleft", legend = c("High Cholesterol", "Low Cholesterol"), 
+       col = c("red", "green"), pch = 15)
+```
+
+The chances of getting a heart attack for both groups stay around 0 untill about age 30. Afterwards, the chance for the high cholesterol group starts to increase exponentially. This does not happen to the low cholesterol group untill the age of 50. The difference of chances between the high and low group increases exponentially from the age 30, and by the age 60 the gap is quite significantly large. It doesn't stop from there and the rate of increase peaks around age 80. By this time the chance for the high cholesterol group is sitting around 80% whereas the low cholesterol group's chance sit around %30; a difference of 50%. After that the percentage for both groups keeps increasing but the gap between the two groups starts to decrase slowly.
+
+High cholesterol level really starts to take toll from age 50; The benefit of being in low cholesterol group is quite drastic. However before that age, the impact is not too fatal.
