@@ -1,0 +1,195 @@
+---
+title: "NZ Heart Attack / European Women's BMI / NZ COVID19"
+author: 
+- "Bin Kim"
+output: html_document
+---
+# NZ Heart Attack
+
+## Fitting a GAM
+
+```{r}
+library("VGAM")
+Heart.df = read.csv("hearthealth.csv")
+Heart.df$fchol <- factor(Heart.df$chol)
+HA.vgam = vgam(heartattack ~ s(age) + fchol, family=binomialff, data=Heart.df)
+summary(HA.vgam)
+```
+
+The null hypothesis here claims that the term `age` can be explained by a linear/parametric function. High P-Value of $\geq 0.25$ suggests that the term indeed can be explained by a parametric function. Hence the alternative hypothesis claiming that the term cannot be explained by a linear/parametric function is rejected i.e. `age` does not need a smoothing function.
+
+## Plot and Comment
+
+```{r, message=FALSE, warning=FALSE}
+# refitted the vgam-fit containing s(age) only so it doesn't generate errors
+# As a Mac user, I couldn't install the patched version of VGAM
+HA.vgam1 = vgam(heartattack ~ s(age), family=binomialff, data=Heart.df)
+plot(HA.vgam1, se = TRUE, lcol = "blue", scol = "orange", llwd = 2,
+     slwd = 2, main = "HA Data - GAM: s(age)")
+detach()
+```
+
+The main trend represented by the blue line is almost a straight line if there wasn't slight curvature around age 55; hinting linearity of the variable. The upward-trend from age 17 to 55 suggests that ageing has a positive (which is bad, increasing the chance of heartattack) effect on the chances of getting a heartattack. However, the variability within majority of this age range is very large, so the claim is very weak evidenced. From age 55 onwards, the flat blue trend and narrow standard error lines suggest that increase in age does not increase the chance of getting a heart attack anymore. 
+
+
+$logit \; Pr(HA_i = 1) = \beta_1 + f_2(age_i) + \beta_3(chol_i)$
+
+Where $Pr(HA_i = 1), \; age_i, \; chol_i$ each represent $i^{th}$ person's chance of having had a heart attack, age and cholesterol level.
+
+# European Women's BMI
+
+## Proportion of overweight and obese people
+
+```{r}
+library("VGAM")
+
+WBMI.df = read.csv("feuro.csv")
+WBMI.sorted.df = WBMI.df[order(WBMI.df$age),]
+WBMI.sorted.df$BMI = WBMI.sorted.df$weight / (WBMI.sorted.df$height*2)
+
+total_n = dim(WBMI.sorted.df)[1]
+overweight_n = length(WBMI.sorted.df$BMI[(WBMI.sorted.df$BMI >= 25) & (WBMI.sorted.df$BMI <30)])
+obese_n = length(WBMI.sorted.df$BMI[WBMI.sorted.df$BMI >= 30])
+
+overweight_prop = overweight_n / total_n
+obese_prop = obese_n / total_n
+cbind(overweight_prop, obese_prop)
+```
+
+## Age vs BMI Plot
+
+```{r}
+plot(BMI ~ age, WBMI.sorted.df, main = "European Women's Age vs BMI", 
+     xlab = "Age", ylab = "BMI")
+```
+
+There doesn't seem to be much effect of `Age` on `BMI` across the whole age range. There's a vertical-upwards skewness across all age range: if a candidate's BMI is not of average value, it's likely that her BMI is on the high side. It could be argued that there's larger variability in BMI between the ages from 30 to 65: possibly due to more data present. There seems to be more data available for women of ages between 17 to 55 than for women of ages 55 onwards.
+
+## Adding smoother to the plot
+
+```{r}
+WBMI.spl = with(WBMI.sorted.df, smooth.spline(age, BMI))
+WBMI.spl
+EDF = WBMI.spl$df
+plot(BMI ~ age, WBMI.sorted.df, main = "European Women's Age vs BMI: Smooth Spline", 
+     xlab = "Age", ylab = "BMI")
+lines(WBMI.spl, col = "red", lwd = 2)
+```
+
+EDF = `r EDF`.
+
+The fitted smooth spline suggests that upto age 55, European Women's BMI increases linearly as they age. From age 55 to 65 there's very little effect of age on BMI. From age 65 onwards, a noticeable downward trend can be observed, possibly quadratic, suggesting that BMI decreases more and more as they age from 65. 
+
+## Age 50 European Women's BMI prediction
+``` {r}
+age.50.pred = predict(WBMI.spl, 50)$y
+```
+
+At age 50, a European women is expected to have BMI `r age.50.pred` according to this smooth fit.
+
+## Fitting a Quadratic instead of GAM
+
+```{r}
+
+WBMI.quad.fit = lm(BMI ~ poly(age, 2), data = WBMI.sorted.df)
+plot(BMI ~ age, WBMI.sorted.df, main = "European Women's Age vs BMI: Quadratic", 
+     xlab = "Age", ylab = "BMI")
+lines(WBMI.sorted.df$age, fitted(WBMI.quad.fit), col = "Red")
+detach()
+```
+
+It is very similar to the plot of the smooth spline fit except that it is generally slightly more flatter. Therefore, the range which the age has virtually no effect is larger than the range in smooth.spline fit.
+
+# NZ COVID-19
+
+## Clean/Manipulate Data and Plot
+
+``` {r}
+covid.df = read.csv("covid19nz.csv")
+names(covid.df)[names(covid.df) == "doy"] = "day"
+mask.neg1 = covid.df$newcases == -1
+covid.df$newcases[mask.neg1] = 0
+num.rows = dim(covid.df)[1]
+# Day = as.Date(covid.df$day)
+covid.df$day = 1:73
+
+plot(newcases ~ day, data = covid.df, las=2, type = "p", 
+     main = "NZ Covid19 Cases: Feb 25th to May 7th")
+```
+
+Plot's overall resembles a bimodal normal distribution with a slight skew to the right. The first peak occurs around 32nd day of the dataset which is in late March, and the second around 38th day which is in early April. The dip is situated right in the middle between two peaks and measures about 25 less cases. In the beginning, the curve is very flat about 0. New cases begin to grow rapidly from around mid-March (25th day) and subsides significantly around mid-April (55th day).
+
+## Compare GAM (mgcv) and Quadratic model.
+
+```{r}
+library("mgcv")
+## (b)
+covid.fit.gam = gam(newcases ~ s(day), poisson, data = covid.df)
+plot(newcases ~ day, data = covid.df, las=2, type = "p", 
+     main = "NZ Covid19 Cases: Feb 25th to May 7th")
+lines(fitted(covid.fit.gam) ~ day, data = covid.df, col = "red")
+lines(newcases[31:41] ~ day[31:41], col = "green", data = covid.df)
+## (c)
+covid.fit.quad = glm(newcases ~ poly(day,2), family = "poisson", data = covid.df)
+lines(fitted(covid.fit.quad) ~ day, data = covid.df, col ="blue")
+legend("topright", legend = c("GAM", "Quadratic"), pch = rep(15, 2), 
+       col = c("red", "blue"))
+
+plot(covid.fit.gam, se = TRUE, main = "GAM Estimated Component Function")
+
+detach()
+
+```
+
+The GAM model fits a quadratic looking fit with a right skew which doesn't perfectly fit over the two peaks and the dip; This is probably due to the fact that there are number of fluctuations of new case reports (e.g. increase in new cases in one day, decrease in the next day, and increase again in the next day etc.) between the two peaks which can be observed from green lines in the plot. Other than that, it fits very nicely along other data points. 
+
+The estimated component function tells that the estimations before around day 20 is not much meaningful due to the wide standard error band. This makes sense because there were hardly any cases before day 20. After day 20, a $\cap$ shaped quadratic looking trend can be observed which peaks around day 30 and starts decreasing past day 40, and this trend seems useful for analysis because of its narrow standard error band (except for the very end).
+
+The quadratic model fits a normal shaped curve that peaks around day 38, and it's peak value is less than the one from GAM model. It does not look to fit better than the GAM model because it creates regions of data points which are either constantly below or above the fit i.e. it does not adhere well locally to the data points. The greatest disparity occurs between days 30 to 40 which is arguably the most important region of the dataset. Overall, GAM model seems to fit much better than the quadratic model.
+
+``` {r}
+library("VGAM")
+GAM.AIC = AIC(covid.fit.gam)
+quad.AIC = AIC(covid.fit.quad)
+
+GAM.BIC = BIC(covid.fit.gam)
+quad.BIC = BIC(covid.fit.quad)
+detach()
+```
+
+GAM Model AIC: `r GAM.AIC`
+
+Quadratic Model AIC: `r quad.AIC`
+
+Difference: `r GAM.AIC - quad.AIC`
+
+
+GAM Model BIC: `r GAM.BIC`
+
+Quadratic Model BIC: `r quad.BIC`
+
+Difference: `r GAM.BIC - quad.BIC`
+
+The differences of AICs and BICs between the two models are overwhelming. Therefore, the GAM model trumps the Quadratic model.
+
+
+## Estimated dates of peak.
+
+```{r}
+gam.max = which.max(fitted(covid.fit.gam))
+quad.max = which.max(fitted(covid.fit.quad))
+```
+
+GAM peak date: `r gam.max`th day, March 31st
+
+Quad peak date: `r quad.max`th day, April 3rd
+
+There's difference of 3 days which is not that much. If that fits the purpose of the modeller, and he/she is in dire need of theoretical/mathematical applicaional advantages of glm models, then she might want to choose the quadratic model over the GAM model, but not for much else due to wild differences in AICs and BICs.
+
+
+
+
+
+
+
+
