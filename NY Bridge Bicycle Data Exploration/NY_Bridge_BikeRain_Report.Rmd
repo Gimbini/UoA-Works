@@ -1,0 +1,205 @@
+---
+title: "Bicycles on New York Bridges"
+author: 
+- "Bin Kim"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(MASS)
+```
+# Data Cleaning/Manipulation
+
+## Changing weather temperature degrees from Fahrenheit to Celsius
+
+```{r}
+bicycle = read.csv("NYbridges.csv")
+
+HighF = bicycle$High.Temp
+LowF = bicycle$Low.Temp
+
+HighC = ((HighF) - 32) * 5 / 9
+LowC = ((LowF) - 32) * (5/9)
+```
+
+
+## Inches to Milimeters
+```{r}
+Raini = as.numeric(as.character(bicycle$Precipitation))
+# NAs are dealt later in (d)
+Rainmm = Raini * 25.4
+```
+
+## Re-Factoring Day of Week
+```{r}
+Day = bicycle$Day
+Day = factor(Day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
+                             "Saturday", "Sunday"))
+bicycle$Day = Day
+```
+
+Factor levels of Day attribute has been re-sorted into conventional Monday to Sunday order to remove unnecessary confusions during later analysis stages.  
+
+## T in Precipitation
+'Trace' in precipitation is a special type of record for immeasurably small amount of prcipitations. Days with T on precipitation record mean that those days had very little rain or snow. Below, the number of days with T and the minimum record for precipitation will be calculated to determine what's to be done with records with T.
+
+```{r}
+Tcount = length(Rainmm[is.na(Rainmm)])
+cat("Number of Occurences of T in Precipitation: ", Tcount, "\n")
+
+Rainmm.positive = Rainmm[Rainmm > 0]
+MinPmm = min(Rainmm.positive, na.rm = TRUE)
+cat("Minimum Value of Precipitation in mm: ", MinPmm, "\n")
+
+```
+
+Since only 7% of records account for 'T' in precipitation and the minimum postivie value recorded in precipitation is barely over zero, they will be turned into zero for our analysis.
+
+```{r}
+Rainmm[is.na(Rainmm)] = 0
+bicycle$Rainmm = Rainmm
+```
+
+# Assumptions
+
+## Why is one temprature variable (HighC) enough?
+
+```{r}
+MinC = min(LowC)
+```
+
+The data has been collected in between April and October when it is the summer period in the US. Minimum temperature is not expected to affect number of bicycle counts very much because it is generally ok to ride bikes in the coldest days of summer. The minimum temperature in the dataset is `r round(MinC, 2)` degrees which is well above the freezing temperature where it is safe enough to bike. Maximum temperature is definitely expected to affect the model because most people are inclined to reduce the amount of outdoor exercise in high tempreature days.
+
+## Why log1p()?
+`log1p()` does 2 things: 1. adds 1 to the variable and 2. log transforms that variable. 
+
+There is a lot of $0$s in the response variable, and when they are passed to the `log` function, they will result in an error becuase $log\; 0$ is an undefined value. Adding 1 to each data record allows these values of 0 to appropriately remain in the model ($log\; 1 = 0$) at the cost of slightly increasing the other non-zero values which wouldn't cause much concern for our analysis.
+
+## Why can one include a quadratic effect for temperature?
+
+From common sense, it is expected that very high temperature is expected to affect the bike counts significantly more than medium-high temperature i.e. $1^\circ$ increase in maximum temperatue within $30^\circ \sim 40^\circ$ range is expected to result in more number of bike counts reduced than $1^\circ$ increase in maximum temperatue within $20^\circ \sim 30^\circ$ range.
+
+It is also reasonable to think that temperature is going to have a positive impact on the bike counts before it reaches certain temperature point because people also generally don't like to exercise when it's too cold.
+
+# Model Tryouts
+
+## Linear
+
+```{r}
+
+model.lin.a<-lm(Brooklyn~log1p(Rainmm)+Day+HighC+I(HighC^2),
+                data=bicycle)
+
+summary(model.lin.a)
+anova(model.lin.a)
+
+par(mfrow=c(2,2))
+hist(bicycle$Brooklyn, main = "Brooklyn Bridge Bicycle Counts", xlab = "# of bicycles/day", breaks = 20)
+plot(predict(model.lin.a), residuals(model.lin.a), main="Residual Plot", ylab="", xlab="# of bicycles/day")
+abline(h=0, lty="dotted")
+
+
+```
+
+The distribution of the response variable does resemble a normal distribution with some left skewness. Points on the residual plot seem to have a mean of 0 across all values, but they do not share constant variance. Their overall variance increases from the beginning of the plot to about halfway and then slightly decreases towards the end of the plot. The anova test for residual sum of squares has returned an incredibly high number: each point on average has squared residual of 224626. Overall, this model shows signs of very strong 'lack-of-fit'.
+
+## Poisson
+
+``` {r}
+model.pois.b<-glm(Brooklyn~log1p(Rainmm)+Day+HighC+I(HighC^2),
+             family="poisson",
+                data=bicycle)
+
+summary(model.pois.b)
+model.b.deviance = deviance(model.pois.b)
+
+cat("Null Hypothesis Testing for the Model \n")
+1 - pchisq(model.pois.b$deviance, model.pois.b$df.residual)
+
+par(mfrow=c(2,2))
+plot(predict(model.pois.b), residuals(model.pois.b, type="response"), main = "Response Residual plot", xlab="log(bicycle count)", ylab="")
+abline(h=0, lty = "dotted")
+plot(predict(model.pois.b), residuals(model.pois.b, type="deviance"), main = "Deviance Residual plot", xlab="log(bicycle count)", ylab="")
+abline(h=0, lty = "dotted")
+lines(c(6.5, 7.4, 8.2), c(-15, 10, -5), col="red")
+plot(predict(model.pois.b), residuals(model.pois.b, type="pearson"), main = "Pearson Residual plot", xlab="log(bicycle count)", ylab="")
+abline(h=0, lty = "dotted")
+lines(c(6.5, 7.37, 8.2), c(-12, 12, -4), col="red")
+
+
+```
+
+The test for the null hypothesis (our model is correct) has proved that it is virtually impossible for this model to be correct with the model's deviance of 22628 and 204 degrees of freedom. All 3 of these residuals are not very much different from Model A's residual plot except that these 3 plots' residual mean is not 0 across the range (**^** shaped trend can be observed) which is a bad sign. 
+
+The non-constant variance is expected to be present only in the response residual plot, but the deviance and Pearson residual plots possess this charateristic as well: another bad sign.  
+
+In additon, the range for deviance and Pearson residual plots far exceed the acceptable range of (-2,2). 
+
+This model overall also suggests very strong lack-of-fit. 
+
+## Quasi-Poisson
+
+```{r}
+model.qpois.c<-glm(Brooklyn~log1p(Rainmm)+Day+HighC+I(HighC^2),
+             family="quasipoisson",
+                data=bicycle)
+
+summary(model.qpois.c)
+par(mfrow=c(2,2))
+
+cat("Null Hypothesis Testing for the Model \n")
+1 - pchisq(model.qpois.c$deviance, model.qpois.c$df.residual)
+
+plot(predict(model.qpois.c), residuals(model.qpois.c, type="deviance"), main = "Deviance Residual plot")
+abline(h=0, lty = "dotted")
+lines(c(6.5, 7.36, 8.2), c(-15, 10, -5), col="red")
+
+plot(predict(model.qpois.c), residuals(model.qpois.c, type="pearson"), main = "Pearson Residual plot")
+abline(h=0, lty = "dotted")
+lines(c(6.5, 7.37, 8.2), c(-12, 12, -4), col="red")
+
+
+
+
+```
+
+Model C drops the distribution assumption and changing the variance assumption (so it is proportional to the mean rather than equal to) from Model B, but it did not fix the inconsistent variance across the pearson and deviance residual plots, hence still very lacking goodness-of-fit.
+
+## Negative Binomial
+
+```{r}
+model.nb.d<-glm.nb(Brooklyn~log1p(Rainmm)+Day+HighC+I(HighC^2),
+                data=bicycle)
+
+summary(model.nb.d)
+cat("Null Hypothesis Testing for the Model \n")
+1 - pchisq(model.nb.d$deviance, model.nb.d$df.residual)
+
+par(mfrow=c(2,2))
+plot(predict(model.nb.d), residuals(model.nb.d, type="deviance"), main="Deviance Residual Plot")
+abline(h=0, lty = "dotted")
+lines(c(6.4, 7.3, 8.25), c(-2.3, 1.4, -0.3), col="red")
+
+plot(predict(model.nb.d), residuals(model.nb.d, type="pearson"), main="Pearson Residual Plot")
+abline(h=0, lty = "dotted")
+lines(c(6.4, 7.3, 8.25), c(-1.7, 1.5, -0.5), col="red")
+
+```
+
+This model passes the deviance statistics: under the null hypothesis assuming that this model is correct, the chance of getting a deviance as extereme as 217.83 on a 204 degrees of freedom is about 24% which is well acceptable.
+
+The Pearson and deviance residuals look most promising compared to the previous ones. Most residuals lie within the acceptable range (-2,2) though there is one point on a Pearson residual plot go as far as almost 6. 
+
+There are inconsistencies in the residual plots that are of same characteristics as Model B \& C: inconsistent variance and **^** shaped trend curve hinting inconsistent mean along the plots.
+
+Overall, this model is not perfect because of its residual patterns, but the deviance statistics and overall residual range suggests that this model is moderately good. 
+
+
+# Out of the four models, which would be the best? Does it fit the data really well? Any additional variables not present in the data to consider?
+
+Model 4 is the best one among them by far: It is the only model to pass the residual/deviance goodness-of-fit test, and its residual range is very promising. However, the curvature and the inconsistent variance in the residual pattern makes this model not a perfect one. Overall it is moderately good. 
+
+Model 4 suggests evidence for people riding less bikes on no other days but sunday. This could be due to the fact that most commuters take their days off on sundays. Good reason for commuting on a bike is that it's less expensive than commuting on motorcycles due to fuel and maintenance costs, therefore people may feel more inclined to ride bikes to work when fuel costs are high. Brooklyn's average fuel cost could be added as an extra explanatory term to find out if that actually is the case.
