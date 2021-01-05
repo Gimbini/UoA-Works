@@ -1,0 +1,326 @@
+---
+title: "Bootstrap, Dredge, and Splines"
+author: 
+- "Bin Kim"
+output: html_document
+ID: 698518689bp.
+---
+```{r}
+library("msm")
+library("MuMIn")
+library("crossval")
+library("knitr")
+```
+
+# Bootstrapping - Women's BMI
+
+## Build a quadratic model on age. Estimate the age where average BMI reaches the maximum (using basic calculus this time).
+
+``` {r}
+WBMI.df = read.csv("feuro.csv")
+WBMI.df = WBMI.df[order(WBMI.df$age), ] # sort by age
+WBMI.df = transform(WBMI.df, BMI = weight / height^2)
+WBMI.quad.fit = lm(BMI ~ poly(age, 2, raw = TRUE), WBMI.df)
+
+summary(WBMI.quad.fit)
+
+# a,b,c in ax^2 + bx + c, although c is redundant.
+a = coef(WBMI.quad.fit)[3]
+b = coef(WBMI.quad.fit)[2]
+c = coef(WBMI.quad.fit)[1]
+
+# differentiating the quadratic equation and setting it to 0 gives
+# x = -b/2a
+
+theta_hat = -b / (2*a)
+x.df = data.frame(age=theta_hat)
+max.BMI = predict(WBMI.quad.fit, x.df)
+
+
+
+plot(BMI ~ age, data=WBMI.df, main="European Women's BMI v. Age")
+lines(with(WBMI.df, age), fitted(WBMI.quad.fit), col="red")
+points(x=theta_hat, y=max.BMI, col = "green", pch = 16)
+legend("topright", legend = "Theta", col = "green", pch = 16)
+
+
+```
+
+The plot shows:
+
+* A thin $\cap$ shaped quadratic trend with statistical significance over the coefficients. There's increase in BMI for increase in age untill age approx. 60 which is probably caused by the decreased metabolism over aging. The decrease in BMI afterwards is probably caused by selection bias where the women of high BMIs did not survive to be recorded into the dataset.
+* On average, women of age approx. `r round(theta_hat,1)` are expected to have the highest average BMI of `r round(max.BMI, 1)`.
+* Skewness towards high-BMI for all ages.
+* More data present for age group 17 ~ 55 than the rest which is probably due to increased chance of death among elderlies.
+* More variability for women of age 25 ~ 65, possibly due to more data present.
+* Less variability for womens of age greater than 65, also probably caused by selection bias.
+
+
+
+
+
+## 95% confidence interval with parametric bootstrapping
+
+``` {r}
+set.seed(969696)        #reproducible
+cfs = coef(WBMI.quad.fit)
+age = with(WBMI.df, age)
+xbeta = cfs[3]*(age^2) + cfs[2]*age + cfs[1]
+sigma = summary(WBMI.quad.fit)$sigma    #sigma_hat from (a)
+n.obs = nrow(WBMI.df)
+Nsim = 1e4
+betas = matrix(0, nr=Nsim, nc=3)
+
+for (i in 1:Nsim) {
+    ysim = rnorm(n.obs, xbeta, sigma)
+    mod_i = lm(ysim ~ poly(age, 2, raw=TRUE))
+    betas[i, ] = coef(mod_i)
+}
+
+est = -cfs[2] / (2*cfs[3]) #-b / 2a
+CI.pm = c(2*est-quantile(-betas[, 2] / (2*betas[, 3]), prob=0.975),
+          2*est-quantile(-betas[, 2] / (2*betas[, 3]), prob=0.025))
+CI.pm
+cat("95% confidence interval for the point estimate produced by the 
+    parametric bootstrapping method is ", CI.pm[1], " - ", CI.pm[2], ".")
+```
+
+
+
+## 95% confidence interval with non-parametric bootstrapping
+
+```{r}
+set.seed(0210)      # reproducibility
+betas.np = matrix(0, Nsim, 3)
+for (i in 1:Nsim) {
+    id = sample(1:n.obs, n.obs, replace = TRUE)
+    BS.df = WBMI.df[id, ]
+    mod_i = lm(BMI ~ poly(age,2,raw=TRUE), data=BS.df)
+    betas.np[i, ] = coef(mod_i)
+}
+
+CI.np = c(2*est-quantile(-betas.np[, 2] / (2*betas.np[, 3]), prob=0.975),
+          2*est-quantile(-betas.np[, 2] / (2*betas.np[, 3]), prob=0.025))
+
+cat("95% confidence interval for the point estimate produced by the 
+    non-parametric bootstrapping method is ", CI.np[1], " - ", CI.np[2], ".")
+```
+
+Non-paramtric method has produced confidence interval very similar to the one produced by parametric method.
+
+## Confidence interval using the delta method
+
+```{r}
+set.seed(960210)
+estmean = coef(WBMI.quad.fit)
+estvar = vcov(WBMI.quad.fit)
+
+dm.sd = deltamethod(~x2 / (2*x3), estmean, estvar)
+CI.dt = -coef(WBMI.quad.fit)[2]/(2*coef(WBMI.quad.fit)[3]) + 1.96 * c(-1,1) * dm.sd
+
+cat("95% confidence interval for the point estimate produced by the 
+    delta method is ", CI.dt[1], " - ", CI.dt[2], ".")
+```
+
+The confidence interval produced by the delta method has slightly higher values of 2.5% and 97.5% marker compared to the parameteric and non-parameteric confidence intervals. The difference of 2.5% and 97.5% marker values, however, are not very large (< 1). The similarities over 3 CIs shows confidence about the confidence intervals of $\theta$ between approx. 58 ~ 65.
+
+## The data is from 1990's sampled across European women. Considering that the data is an approximate random sample of the NZ working population at the time, is it generalisable to the current population?
+
+```{r, fig.cap= "From StatsNZ"}
+include_graphics("Q2e.png")
+```
+
+The model's application to nowadays's data seems inappropriate for following reasons:
+
+* There has been substantial increase in Asian population since the mid-1990s (Almost tripled numbers since 1996). Which shows concern
+* More than 20 years has passed since the time of survey. Women of nowadays will probably have some different characterstics than those of mid-1990's,
+* The proportion of females participants in the original survey is 28%, which is far from NZ's proportion of females (> 50%), therefore not being representative of population of interest.
+
+
+
+# Model Selection: Dredge
+
+```{r}
+options(na.action = "na.fail")
+fm1 <- lm(sr ~ pop15 + pop75 + dpi + ddpi, data = LifeCycleSavings)
+all.fits = dredge(global.model = fm1, rank = BIC, subset = "ddpi")
+all.fits
+```
+
+The Top-5 models which have delta $< 8$ will be tested via cross-validation.
+
+``` {r}
+predfun.lm = function(train.x, train.y, test.x, test.y) {
+    lm1.fit = lm(train.y ~ ddpi+pop15, data=train.x)
+    ynew = predict(lm1.fit, test.x)
+    out1 = mean((ynew - test.y)^2)
+    
+    lm2.fit = lm(train.y ~ ddpi+pop15+pop75, data=train.x)
+    ynew = predict(lm2.fit, test.x)
+    out2 = mean((ynew - test.y)^2)
+    
+    lm3.fit = lm(train.y ~ ddpi+dpi+pop15, data=train.x)
+    ynew = predict(lm3.fit, test.x)
+    out3 = mean((ynew - test.y)^2)
+    
+    lm4.fit = lm(train.y ~ ddpi+dpi+pop15+pop75, data=train.x)
+    ynew = predict(lm4.fit, test.x)
+    out4 = mean((ynew - test.y)^2)
+    
+    lm5.fit = lm(train.y ~ ddpi+pop75, data=train.x)
+    ynew = predict(lm5.fit, test.x)
+    out5 = mean((ynew - test.y)^2)
+    
+    c(out1, out2, out3, out4, out5)
+}
+
+cv.out = crossval(predfun.lm, X = LifeCycleSavings[, 2:5], Y = LifeCycleSavings[, 1],
+                  K = 10, B = 500, verbose = FALSE)
+
+cat("MSPE of the Top-5 Models \n")
+round(cv.out$stat, 2)
+
+cat("Standard Errors of MSPEs \n")
+round(cv.out$stat.se, 2)
+```
+
+The Top-4 models have very similar estimated mean standard prediction errors. The 5th model seems much larger than the others.
+
+Our MSPE estimation testing has concluded that the model#14 is the most appropriate model (lowest value of MSPE). It also has the lowest value of standard error which further strengthens the claim. However, because the estimates MSPEs of the Top-4 models are very simillar, there is a chance that the true MSPEs of the Top-4 models could in reality be equivalent (or trivailly different) to others. Therefore, careful considerations for the other 3 should also be revised. 
+
+Let's finally check if model#14 passes required assumptions.
+
+``` {r}
+lm2.fit = lm(sr ~ ddpi+pop15+pop75, data=LifeCycleSavings)
+summary(lm2.fit)
+plot(lm2.fit)
+```
+
+The main concern seems to be that Model#14's `pop75` explanatory variable is weakly evidenced (P-value $\approx$ 0.07). Some countries have high cook's distance on the residuals vs leverage plot, apart from this, there however seems to be no strong anomalies within the model.
+
+If the explanatory variable `pop75` is removed from the model, then the resulting model is equivalent to the model#6 which was ranked first in the BIC testing. Let's examine model#6.
+
+```{r}
+lm1.fit = lm(sr ~ ddpi+pop15, data=LifeCycleSavings)
+summary(lm1.fit)
+plot(lm1.fit)
+```
+
+The main problem here seems to be that the country Libya has a significantly large value of cook's distance. This probably imposed a relatively heavy penalty on the MSPE estimation. If the country Libya was to be taken out of the dataset as an outlier, there seems to be a good chance that Model#6 will rank #1 in the MSPE estimation as well. Investigators of concern may carefully consider these findings to better approximate their topic of interest.
+
+
+
+# Splines
+
+## Generate 'sample' data.
+
+``` {r}
+set.seed(763) 
+n <- 100
+X <- scale(3 * (1:n)/n, scale = FALSE)
+myfun <- function(x)
+    2 - x + 3*x*x
+Y <- myfun(X) + rnorm(n)
+
+plot(X, Y, col = "blue")
+fit <- smooth.spline(X, Y, df = 3, all = TRUE)
+lines(fit, lty = 1, col = "green", lwd = 2)
+
+```
+
+The trend fitted by the smooth of degrees of freedom = 3 is not too bad, but shows some concern for biased regions. There seems to be an edge-effect on the both ends of X-axis where points are plotted above the trend, and the points that lie in the mid-range of X-axis (-0.5, 0.25) are mostly placed below the trend. This hints that this model is underfitting, and for availability of a better model.
+
+## Smooth curves with df = 2 and df = 20.
+
+``` {r}
+plot(X, Y, col = "blue", )
+fit <- smooth.spline(X, Y, df = 3, all = TRUE)
+lines(fit, lty = 1, col = "green", lwd = 2)
+
+fit.df2 = smooth.spline(X, Y, df = 2, all = TRUE)
+lines(fit.df2, lty = 1, col = "red", lwd = 2)
+
+fit.df20 = smooth.spline(X, Y, df = 20, all = TRUE)
+lines(fit.df20, lty = 1, col = "pink", lwd = 2)
+
+legend("topright", legend = c("df = 2", "df = 3", "df = 20"), 
+       col=c("red", "lightgreen", "pink"), pch = rep(15,3))
+```
+
+The red smooth (df = 2) clearly underfits the data because it's a simple linear trend over a clear curve pattern. 
+
+For the pink smooth (df =20), there are too many unnecessary wiggles in the trend line, which hints overfitting. It will not be suitable for future predictions on a new data set.
+
+The green smooth (df = 3) seems to be the most appropriate out of these 3 fits.
+
+## RSS comparison over a range of degrees of freedom. 
+
+``` {r}
+set.seed(763)
+df.v.mrss = data.frame("df" = 2:20, "mrss.train" = rep(0,19), "mrss.test" = rep(0,19))
+n = nrow(X)
+for (i in 2:20) {
+    fit.i = smooth.spline(X, Y, df=i, all = TRUE)
+    mrss.i = with(fit.i, pen.crit) / n
+    df.v.mrss$mrss.train[i-1] = mrss.i
+    
+}
+
+plot(mrss.train ~ df, data=df.v.mrss, main = "MRSSs of Fits with Varying Degrees of
+     Freedom", ylab = "MRSS", xlab = "df", col = "darkgreen")
+lines(df.v.mrss, col = "darkgreen")
+```
+
+The mean residual sum of squares expectedely decreases dramatically as degrees of freedom of the model increses from 2 to 3 (linear to quadratic). There is a noticeable decrease of MRSS from df 3 to 4 as well. From then however, the decrease in MRSS measures almost trivially as dfs of the models increase. This indicates that, at certain point of degrees of freedom, in this case 4, further increasing the degrees of freedom of smooth does not have much effect in reducing the errors of the model.
+
+## RSS of the fitted model over new (test) data
+
+``` {r}
+set.seed(12345) # generate new data
+n = 5000
+X.test <- scale(3 * (1:n)/n, scale = FALSE)
+myfun <- function(x)
+    2 - x + 3*x*x
+Y.test <- myfun(X.test) + rnorm(n)
+
+for (i in 2:20) {
+    fit.i = smooth.spline(X, Y, df=i, all=TRUE) # training data
+    y_hat = with(predict(fit.i, X.test), y) # predict y on X.test by using the smooth
+    mrss.i = mean((Y.test - y_hat)^2)
+    df.v.mrss$mrss.test[i-1] = mrss.i
+    
+}
+
+plot(mrss.train ~ df, data=df.v.mrss, main = "MRSSs of Fits with Varying Degrees of
+     Freedom", ylab = "MRSS", xlab = "df", col = "darkgreen")
+lines(df.v.mrss, col = "darkgreen")
+
+x = with(df.v.mrss, df)
+y = with(df.v.mrss, mrss.test)
+
+points(x,y, col = "darkblue")
+lines(x,y, col = "darkblue")
+
+legend("topright", legend=c("Train", "Test"), col = c("darkgreen", "darkblue"), pch=15)
+```
+
+We can see from the plot that the difference of MRSS between the test and train model increases as model's degrees of freedom increases. This translates to: "fitting too well on a given data set results in bad prediction/utility in a real world situation". 
+
+## Determining the best smoothing parameter
+
+``` {r}
+fit.ss = smooth.spline(x = X, y = Y, all=TRUE)
+fit.ss
+plot(X, Y, main = "smooth.spline()'s Choice of Model")
+lines(fit.ss, col="red")
+
+```
+
+GCV of value $\approx$ 1 has chosen degrees of freedom $\approx$ 7.2 and the smoothing parameter $\approx$ 0.85. The trend on the plot fits very nicely over the points. Localness of curves in trend are well preserved across all ranges. Compared to the fit in (a), this model's trend has more curves because of the higher df value. The trend decreases quadratically, like it did in (a), from the beginning of the plot to X = 0. It then takes an almost linear increase to about X $\approx$ 0.7. From X = 0.7, the trend begins to increase quadratically again towards the end of the plot. 
+
+It seems that the 3 distinct regions could also be modelled by `bs(X, knots = c(-0.05, 0.7), degree = 2)`
+
+## Lesson of the day
+
+DO NOT OVERFIT THE MODEL TO THE TRAINING DATA. This question has shown that overfitted model does not have significantly less errors in the training set than the adequately fitted model, and it will perform poorly in real world applications. 
+
